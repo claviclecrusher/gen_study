@@ -1,198 +1,314 @@
 # Gen_Study: Generative Models Visualization
 
-1D 신세틱 데이터를 사용한 생성 모델(Decoder, Autoencoder, VAE) 학습 및 시각화 프로젝트
+A comprehensive study and visualization project for various generative models using 1D and 2D synthetic data.
 
-## 프로젝트 개요
+## Project Overview
 
-이 프로젝트는 매우 작은 1차원 신세틱 데이터(2-Gaussian mixture)를 생성하고, 세 가지 생성 모델을 학습하여 그 동작을 시각화합니다.
+This project implements and visualizes multiple generative models to understand their behavior, training dynamics, and generation capabilities. It supports both 1D and 2D synthetic data experiments with detailed visualizations and comparison tools.
 
-### 구현된 모델
+## Implemented Models
 
-1. **Non-identifiable Decoder**: 랜덤 노이즈를 입력받아 데이터를 생성하는 단순한 디코더 (mode collapse 현상 관찰)
-2. **Autoencoder**: 데이터를 잠재 공간으로 인코딩하고 다시 복원하는 모델
-3. **VAE (Variational Autoencoder)**: KL regularization을 통해 잠재 공간을 정규화하는 생성 모델
+### 1. Basic Models
+1. **Non-identifiable Decoder**: A simple decoder that maps random noise to data (demonstrates mode collapse)
+2. **Autoencoder**: Encodes data to latent space and reconstructs it
+3. **VAE (Variational Autoencoder)**: Regularizes latent space using KL divergence
 
-## 프로젝트 구조
+### 2. Flow-based Models
+4. **Flow Matching (FM)**: Learns the probability flow ODE for generative modeling
+5. **MeanFlow**: Uses mean velocity for faster sampling while maintaining flow matching
+6. **FACM (Flow-Anchored Consistency Models)**: Combines flow matching anchor with consistency model accelerator
+7. **BackFlow**: Implements backward flow matching with optimal transport perspective
+
+## Project Structure
 
 ```
 Gen_Study/
 ├── data/
 │   ├── __init__.py
-│   └── synthetic.py          # 2-Gaussian mixture 데이터 생성
+│   ├── synthetic.py          # 1D/2D synthetic data generation
+│   └── synthetic_2d.py       # 2D data utilities
 ├── models/
 │   ├── __init__.py
-│   ├── base_mlp.py          # Base MLP 클래스
-│   ├── decoder.py           # Non-identifiable Decoder
-│   ├── autoencoder.py       # Autoencoder
-│   └── vae.py               # VAE
+│   ├── base_mlp.py           # Base MLP architecture
+│   ├── decoder.py            # Non-identifiable Decoder
+│   ├── autoencoder.py        # Autoencoder
+│   ├── vae.py                # Variational Autoencoder
+│   ├── flow_matching.py      # Flow Matching model
+│   ├── mean_flow.py          # MeanFlow model
+│   ├── facm.py               # FACM model
+│   └── backflow.py           # BackFlow model
 ├── training/
 │   ├── __init__.py
-│   ├── train_decoder.py     # Decoder 학습 스크립트
-│   ├── train_ae.py          # Autoencoder 학습 스크립트
-│   └── train_vae.py         # VAE 학습 스크립트
+│   ├── train_decoder.py      # Decoder training
+│   ├── train_ae.py           # Autoencoder training
+│   ├── train_vae.py          # VAE training
+│   ├── train_fm.py           # Flow Matching training (1D/2D)
+│   ├── train_fm_2d.py        # Flow Matching training (2D)
+│   ├── train_meanflow.py     # MeanFlow training (1D/2D)
+│   ├── train_meanflow_2d.py  # MeanFlow training (2D)
+│   ├── train_facm.py         # FACM training
+│   └── train_backflow.py     # BackFlow training
 ├── visualization/
 │   ├── __init__.py
-│   ├── config.py            # 색상 및 스타일 설정
-│   ├── viz_decoder.py       # Decoder 시각화
-│   ├── viz_ae.py            # Autoencoder 시각화
-│   └── viz_vae.py           # VAE 시각화
-├── outputs/                  # 학습된 모델 및 시각화 결과
-├── main.py                   # 전체 실험 실행 스크립트
+│   ├── config.py             # Color and style configuration
+│   ├── viz_decoder.py        # Decoder visualization
+│   ├── viz_ae.py             # Autoencoder visualization
+│   ├── viz_vae.py            # VAE visualization
+│   ├── viz_fm.py             # Flow Matching visualization (1D)
+│   ├── viz_fm_2d.py          # Flow Matching visualization (2D)
+│   ├── viz_meanflow.py       # MeanFlow visualization (1D)
+│   ├── viz_meanflow_2d.py    # MeanFlow visualization (2D)
+│   ├── viz_facm.py           # FACM visualization (1D)
+│   ├── viz_facm_2d.py        # FACM visualization (2D)
+│   ├── viz_backflow.py       # BackFlow visualization (1D)
+│   └── viz_backflow_2d.py    # BackFlow visualization (2D)
+├── outputs/                  # Trained models and visualization results
+│   ├── comparison_1d/        # 1D comparison experiments
+│   └── comparison_2d/        # 2D comparison experiments
+├── run_comparison.py         # Comparison experiments script
+├── main.py                   # Main experiment execution script
 ├── requirements.txt
 └── README.md
 ```
 
-## 설치 방법
+## Installation
 
-### 1. Conda 환경 생성 및 활성화
+### 1. Create and Activate Conda Environment
 
 ```bash
-# Gen_Study 디렉토리로 이동
+# Navigate to Gen_Study directory
 cd /home/user/Desktop/Gen_Study
 
-# Conda 환경 생성 (Python 3.10)
+# Create conda environment (Python 3.10)
 conda create -n gen_study python=3.10 -y
 
-# 환경 활성화
+# Activate environment
 conda activate gen_study
 ```
 
-### 2. 패키지 설치
+### 2. Install Dependencies
 
 ```bash
-# 필요한 패키지 설치
+# Install required packages
 pip install -r requirements.txt
 ```
 
-### 환경 비활성화 (작업 종료 시)
+### Deactivate Environment (when finished)
 
 ```bash
 conda deactivate
 ```
 
-## 사용 방법
+## Usage
 
-**주의**: 모든 명령은 `gen_study` conda 환경이 활성화된 상태에서 실행해야 합니다.
+**Note**: All commands should be executed with the `gen_study` conda environment activated.
 
 ```bash
-# 환경 활성화 확인
+# Activate environment
 conda activate gen_study
 ```
 
-### 전체 실험 실행
+### Run All Experiments
 
 ```bash
+# Run all models sequentially
 python main.py
+
+# Run specific model
+python main.py --model facm
 ```
 
-이 명령은 다음을 수행합니다:
-1. 500개의 2-Gaussian mixture 샘플 생성
-2. 네 가지 모델 각각 2000 에폭 학습 (Decoder, Autoencoder, VAE β=1.0, VAE β=10.0)
-3. 학습된 모델 저장 (`outputs/` 디렉토리)
-4. 각 모델의 시각화 결과 저장 (`outputs/` 디렉토리)
+Available models: `decoder`, `ae`, `vae`, `vae_beta`, `fm`, `meanflow`, `facm`, `backflow`
 
-### 개별 모델 학습
+### Run Comparison Experiments
 
 ```bash
-# Decoder만 학습
+# Run 1D comparison (all models)
+python run_comparison.py --dim 1d --epochs 200
+
+# Run 2D comparison (all models)
+python run_comparison.py --dim 2d --epochs 200
+
+# Run both 1D and 2D
+python run_comparison.py --dim both --epochs 200
+
+# Run specific models only
+python run_comparison.py --dim 1d --models fm meanflow facm backflow --epochs 200
+```
+
+### Train Individual Models
+
+```bash
+# Decoder
 python training/train_decoder.py
 
-# Autoencoder만 학습
+# Autoencoder
 python training/train_ae.py
 
-# VAE만 학습
+# VAE
 python training/train_vae.py
+
+# Flow Matching
+python training/train_fm.py
+
+# MeanFlow
+python training/train_meanflow.py
+
+# FACM
+python training/train_facm.py
+
+# BackFlow
+python training/train_backflow.py
 ```
 
-### 데이터 생성 테스트
+### Test Data Generation
 
 ```bash
+# Test 1D data generation
 python data/synthetic.py
+
+# Test 2D data generation
+python data/synthetic_2d.py
 ```
 
-## 설정
+## Configuration
 
-### 데이터 설정
-- **2-Gaussian mixture**
-  - Gaussian 1: mean=-2.0, std=0.8 (70%)
-  - Gaussian 2: mean=2.0, std=0.6 (30%)
-- **샘플 수**: 500
+### Data Settings
 
-### 모델 설정
-- **MLP 구조**: [32, 64, 32] hidden layers
-- **잠재 차원**: 1D
-- **입출력 차원**: 1D
+**1D Data (2-Gaussian Mixture)**:
+- Gaussian 1: mean=-2.0, std=0.8 (70%)
+- Gaussian 2: mean=2.0, std=0.6 (30%)
+- Sample size: 500 (default)
 
-### 학습 설정
+**2D Data**:
+- Configurable 2D distributions
+- Sample size: 500 (default)
+
+### Model Settings
+
+- **MLP Architecture**: [32, 64, 32] hidden layers (default)
+- **Latent Dimension**: 1D or 2D (depending on experiment)
+- **Input/Output Dimension**: Matches data dimension
+
+### Training Settings
+
 - **Optimizer**: Adam
-- **Learning rate**: 1e-3
-- **Batch size**: 64
-- **Epochs**: 2000
+- **Learning Rate**: 1e-3 (default)
+- **Batch Size**: 64 (default)
+- **Epochs**: 2000 (default for main.py), 200 (default for run_comparison.py)
 
-### 시각화 색상 설정
+### Visualization Color Settings
 
-색상은 [`visualization/config.py`](visualization/config.py)에서 중앙 관리됩니다:
+Colors are centrally managed in [`visualization/config.py`](visualization/config.py):
 
 ```python
 COLORS = {
-    'prior_z': '#1f77b4',        # blue - 사전 분포 z
-    'data_x': '#ff7f0e',         # orange - 데이터 x
-    'latent_z_hat': '#2ca02c',   # green - 인코딩된 ẑ
-    'output_x_hat': '#d62728',   # red - 복원된 x̂
-    'coupling_train': '#7f7f7f', # gray - 학습 커플링
-    'coupling_infer': '#9467bd', # purple - 추론 매핑
-    'encode_line': '#8c564b',    # brown - 인코딩 선
-    'decode_line': '#e377c2',    # pink - 디코딩 선
+    'prior_z': '#1f77b4',        # blue - prior distribution z
+    'data_x': '#ff7f0e',         # orange - data x
+    'latent_z_hat': '#2ca02c',   # green - encoded ẑ
+    'output_x_hat': '#d62728',   # red - reconstructed x̂
+    'coupling_train': '#7f7f7f', # gray - training coupling
+    'coupling_infer': '#9467bd', # purple - inference mapping
+    'encode_line': '#8c564b',    # brown - encoding line
+    'decode_line': '#e377c2',    # pink - decoding line
 }
 ```
 
-## 시각화 설명
+## Visualization Details
 
-각 시각화는 하나의 이미지에 두 공간을 나타냅니다:
-- **왼쪽 패널**: 잠재/소스 공간 (z, ẑ)
-- **오른쪽 패널**: 데이터/타겟 공간 (x, x̂)
-- **연결선**: 매핑 관계 시각화
+### Basic Models (Decoder, AE, VAE)
 
-### 1. Decoder 시각화
-- 학습 시 랜덤 커플링 (회색 선)
-- 추론 시 매핑 (보라색 선)
-- 출력이 데이터의 평균으로 수렴하는 mode collapse 관찰 가능
+Each visualization shows two spaces in a single image:
+- **Left Panel**: Latent/source space (z, ẑ)
+- **Right Panel**: Data/target space (x, x̂)
+- **Connecting Lines**: Mapping relationships
 
-### 2. Autoencoder 시각화
-- 인코딩: x → ẑ (갈색 선)
-- 디코딩: ẑ → x̂ (분홍색 선)
-- 잠재 공간 ẑ가 사전 분포와 다를 수 있음
+#### 1. Decoder Visualization
+- Random coupling during training (gray lines)
+- Inference mapping (purple lines)
+- Mode collapse: outputs converge to data mean
 
-### 3. VAE 시각화 (β=1.0)
-- Autoencoder와 동일한 구조
-- KL regularization으로 ẑ가 사전 분포 N(0,1)에 가까워짐
-- 재구성 품질과 정규화 사이의 트레이드오프 관찰 가능
+#### 2. Autoencoder Visualization
+- Encoding: x → ẑ (brown lines)
+- Decoding: ẑ → x̂ (pink lines)
+- Latent space ẑ may differ from prior distribution
 
-### 4. VAE with High Beta 시각화 (β=10.0)
-- 높은 β 값으로 KL regularization을 더욱 강화
-- ẑ가 사전 분포 N(0,1)에 더욱 가까워짐
-- β=1.0과 비교하여 정규화 효과가 더 강함을 관찰 가능
-- 재구성 품질은 다소 저하될 수 있으나 생성 품질은 향상
+#### 3. VAE Visualization (β=1.0)
+- Same structure as Autoencoder
+- KL regularization makes ẑ closer to prior N(0,1)
+- Trade-off between reconstruction quality and regularization
 
-## 출력 파일
+#### 4. VAE with High Beta (β=10.0)
+- Stronger KL regularization
+- ẑ even closer to prior N(0,1)
+- Stronger regularization effect compared to β=1.0
+- Slight reconstruction quality decrease but improved generation quality
 
-실행 후 `outputs/` 디렉토리에 다음 파일들이 생성됩니다:
-- `nid_decoder_model.pt` - 학습된 Non-identifiable Decoder 모델
-- `nid_decoder_visualization.png` - Non-identifiable Decoder 시각화
-- `autoencoder_model.pt` - 학습된 Autoencoder 모델
-- `autoencoder_visualization.png` - Autoencoder 시각화
-- `vae_beta1.0_model.pt` - 학습된 VAE 모델 (β=1.0)
-- `vae_beta1.0_visualization.png` - VAE 시각화 (β=1.0)
-- `vae_beta10.0_model.pt` - 학습된 VAE 모델 (β=10.0)
-- `vae_beta10.0_visualization.png` - VAE 시각화 (β=10.0)
+### Flow-based Models (FM, MeanFlow, FACM, BackFlow)
 
-## 요구 사항
+Visualizations show:
+- **Trajectories**: ODE integration paths from noise to data
+- **Training Data**: Source and target distributions
+- **Inference Samples**: Generated samples from prior
+- **One-step Predictions**: Direct mappings (for consistency models)
 
-- Python 3.7+
-- PyTorch 2.0+
-- NumPy 1.24+
-- Matplotlib 3.7+
+#### Flow Matching (FM)
+- Shows probability flow trajectories
+- Demonstrates smooth interpolation from noise to data
 
-## 라이센스
+#### MeanFlow
+- Shows mean velocity trajectories
+- Faster sampling with multi-step mean velocity ODE
 
-이 프로젝트는 교육 및 연구 목적으로 자유롭게 사용할 수 있습니다.
+#### FACM
+- Combines flow matching anchor with consistency model
+- Shows both ODE trajectories and one-step consistency predictions
+- Time-dependent weighting: CM loss stronger at t=0, FM loss at t=1
+
+#### BackFlow
+- Shows backward flow matching trajectories
+- Optimal transport perspective
+- One-step decode capability
+
+## Output Files
+
+After running experiments, the following files are generated in `outputs/`:
+
+### Individual Model Outputs
+- `*_model.pt` - Trained model checkpoints
+- `*_visualization.png` - Model visualizations
+
+### Comparison Experiments
+- `comparison_1d/comparison_frames/epoch_*.png` - Epoch-by-epoch comparison frames
+- `comparison_1d/comparison_1d.gif` - Animated comparison GIF
+- `comparison_2d/comparison_frames/epoch_*.png` - Epoch-by-epoch comparison frames
+- `comparison_2d/comparison_2d.gif` - Animated comparison GIF
+- `*_epochs/epoch_*.png` - Individual model epoch visualizations
+
+## Model-Specific Details
+
+### FACM Loss Weighting
+
+FACM uses a time-dependent weighting scheme:
+- **FM Loss**: Constant weight (anchor)
+- **CM Loss**: Weighted by `β = cos(t * π/2)`
+  - t=0: β=1.0 (maximum CM weight)
+  - t=1: β=0.0 (minimum CM weight)
+- **Total Loss**: `L_total = L_CM.mean() + L_FM.mean()`
+
+This design allows CM loss to accelerate learning early (t≈0) while FM loss stabilizes training later (t≈1).
+
+## Requirements
+
+- Python 3.10+
+- PyTorch 2.9+
+- NumPy 2.2+
+- Matplotlib 3.10+
+- Pillow 12.1+
+- SciPy 1.15+
+
+See `requirements.txt` for exact versions.
+
+## License
+
+This project is freely available for educational and research purposes.
