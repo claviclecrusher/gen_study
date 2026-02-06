@@ -132,6 +132,8 @@ class FACM(nn.Module):
         *,
         config: Optional[FACMConfig] = None,
         t: Optional[torch.Tensor] = None,
+        z: Optional[torch.Tensor] = None,
+        weights: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Compute FACM loss (total, cm, fm) for a batch of data x.
@@ -140,6 +142,8 @@ class FACM(nn.Module):
             x: data samples, (B, D)
             config: FACMConfig
             t: optional time tensor, (B,1). If None, sampled according to config.
+            z: optional noise tensor, (B, D). If None, sampled from N(0, I). For CFM coupling.
+            weights: optional loss weights for UOTRFM (B,)
         """
         if config is None:
             config = FACMConfig()
@@ -148,7 +152,8 @@ class FACM(nn.Module):
         device = x.device
 
         # Noise and time
-        z = torch.randn_like(x)
+        if z is None:
+            z = torch.randn_like(x)
         if t is None:
             t = self.sample_t(b, device, t_type=config.t_type, mean=config.mean, std=config.std, dtype=x.dtype)
         t = t.view(b, 1)
@@ -186,6 +191,13 @@ class FACM(nn.Module):
 
         beta = torch.cos(t.flatten() * math.pi / 2.0)
         cm_loss = self._norm_l2_loss(F_avg, target, p=config.p, c=config.c) * beta
+
+        # Apply weights for UOTRFM
+        if weights is not None:
+            weights_expanded = weights.view(-1, 1) if weights.dim() == 1 else weights
+            # Weight only the FM loss (as per UOTRFM)
+            fm_loss = fm_loss * weights_expanded.squeeze()
+            cm_loss = cm_loss * weights_expanded.squeeze()
 
         total = cm_loss.mean() + fm_loss.mean()
         return total, cm_loss.mean(), fm_loss.mean()

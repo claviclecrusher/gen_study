@@ -14,6 +14,7 @@ def visualize_facm_2d(
     x_data,
     save_path=None,
     epoch=None,
+    cfm_type=None,
 ):
     """
     Args:
@@ -21,6 +22,7 @@ def visualize_facm_2d(
         cm_onestep: CM one-step samples (n_infer, 2)
         z_samples: initial noise samples (n_infer, 2)
         x_data: training data (n_train, 2)
+        cfm_type: CFM coupling type (optional, for title)
     """
     setup_plot_style()
     fig, ax = plt.subplots(1, 1, figsize=(6, 5))
@@ -102,12 +104,19 @@ def visualize_facm_2d(
 
     ax.set_xlabel("x₁")
     ax.set_ylabel("x₂")
-    title = f"FACM (Epoch {epoch})" if epoch is not None else "FACM"
+    cfm_str = f' ({cfm_type.upper()})' if cfm_type else ''
+    title = f"FACM{cfm_str} (Epoch {epoch})" if epoch is not None else f"FACM{cfm_str}"
     ax.set_title(title)
     ax.legend(loc="best", framealpha=0.9, fontsize=8)
     ax.grid(True, alpha=0.3)
-    ax.set_xlim(-6, 6)
-    ax.set_ylim(-6, 6)
+    
+    # Set limits based on data range with padding
+    all_x = np.concatenate([x_data[:, 0], trajectories[:, :, 0].flatten(), cm_onestep[:, 0], z_samples[:, 0]])
+    all_y = np.concatenate([x_data[:, 1], trajectories[:, :, 1].flatten(), cm_onestep[:, 1], z_samples[:, 1]])
+    x_padding = (all_x.max() - all_x.min()) * 0.1
+    y_padding = (all_y.max() - all_y.min()) * 0.1
+    ax.set_xlim(all_x.min() - x_padding, all_x.max() + x_padding)
+    ax.set_ylim(all_y.min() - y_padding, all_y.max() + y_padding)
     ax.set_aspect("equal", adjustable="box")
 
     plt.tight_layout()

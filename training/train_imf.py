@@ -1,5 +1,6 @@
 """
-Training script for MeanFlow model
+Training script for Improved MeanFlow (iMF) model
+Reference: https://arxiv.org/html/2512.02012v1
 """
 import torch
 import torch.optim as optim
@@ -10,17 +11,17 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models.mean_flow import MeanFlow
+from models.improved_mean_flow import ImprovedMeanFlow
 from data.synthetic import generate_data, generate_data_2d, sample_prior
 from utils.cfm_sampler import create_cfm_sampler
 
 
-def train_meanflow(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, device='cpu',
-                   viz_interval=None, viz_output_dir=None, flow_ratio=0.5, n_infer=200, dim='1d',
-                   cfm_type='icfm', cfm_reg=0.05, cfm_reg_m=(float('inf'), 2.0), cfm_weight_power=10.0,
-                   dataset_2d='2gauss', lr_scheduler='cosine', lr_scheduler_params=None):
+def train_imf(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, device='cpu',
+              viz_interval=None, viz_output_dir=None, flow_ratio=0.5, n_infer=200, dim='1d',
+              cfm_type='icfm', cfm_reg=0.05, cfm_reg_m=(float('inf'), 2.0), cfm_weight_power=10.0,
+              dataset_2d='2gauss', lr_scheduler='cosine', lr_scheduler_params=None):
     """
-    Train MeanFlow model
+    Train Improved MeanFlow (iMF) model
 
     Args:
         n_samples: Number of training samples
@@ -40,7 +41,7 @@ def train_meanflow(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, 
         cfm_weight_power: Power factor for UOTRFM weights
 
     Returns:
-        model: Trained MeanFlow model
+        model: Trained Improved MeanFlow model
         history: Training history (losses)
     """
     # Set random seeds
@@ -48,9 +49,10 @@ def train_meanflow(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, 
     np.random.seed(seed)
 
     print("=" * 60)
-    print("Training MeanFlow Model")
+    print("Training Improved MeanFlow (iMF) Model")
     print(f"CFM Type: {cfm_type.upper()}")
     print("=" * 60)
+    print("Key improvement: v-loss reformulation with ground-truth target")
 
     # Create CFM sampler
     cfm_sampler = create_cfm_sampler(
@@ -73,7 +75,7 @@ def train_meanflow(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, 
         x_data = torch.FloatTensor(x_data).to(device)
 
     # Create model
-    model = MeanFlow(input_dim=input_dim).to(device)
+    model = ImprovedMeanFlow(input_dim=input_dim).to(device)
     print(f"Model created with {sum(p.numel() for p in model.parameters())} parameters")
 
     # Optimizer
@@ -100,18 +102,18 @@ def train_meanflow(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, 
     # Prepare visualization data if needed
     if viz_interval is not None and viz_output_dir is not None:
         if dim == '1d':
-            from visualization.viz_meanflow import visualize_meanflow
+            from visualization.viz_imf import visualize_imf
         else:
-            from visualization.viz_meanflow_2d import visualize_meanflow_2d
+            from visualization.viz_imf_2d import visualize_imf_2d
 
         os.makedirs(viz_output_dir, exist_ok=True)
 
         # Generate training and inference data for visualization
-    z_train_viz = sample_prior(n_samples=n_samples, seed=seed, dim=input_dim)
-    if dim == '1d':
-        x_train_viz = generate_data(n_samples=n_samples, seed=seed)
-    else:
-        x_train_viz = generate_data_2d(n_samples=n_samples, seed=seed, dataset=dataset_2d)
+        z_train_viz = sample_prior(n_samples=n_samples, seed=seed, dim=input_dim)
+        if dim == '1d':
+            x_train_viz = generate_data(n_samples=n_samples, seed=seed)
+        else:
+            x_train_viz = generate_data_2d(n_samples=n_samples, seed=seed, dataset=dataset_2d)
         coupling_indices_viz = np.random.permutation(n_samples)
 
         z_infer_viz = sample_prior(n_samples=n_infer, seed=seed + 1, dim=input_dim)
@@ -146,7 +148,7 @@ def train_meanflow(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, 
             # Apply CFM coupling (e=noise, x=data)
             e_coupled, x_coupled, weights = cfm_sampler.sample_coupling(e_batch, x_batch)
 
-            # Sample t and r following GitHub implementation
+            # Sample t and r following the same strategy as original MeanFlow
             # Generate two random samples
             s1 = torch.rand(batch_size_actual, 1).to(device)
             s2 = torch.rand(batch_size_actual, 1).to(device)
@@ -188,20 +190,20 @@ def train_meanflow(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, 
                     if dim == '1d':
                         z_tensor = torch.FloatTensor(z_infer_viz).unsqueeze(1).to(device)
 
-                        # ODE trajectories (instantaneous velocity v)
+                        # ODE trajectories
                         trajectories_tensor = model.sample(z_tensor, n_steps=100, device=device)
                         trajectories = trajectories_tensor.squeeze().cpu().numpy()
 
-                        # Mean velocity ODE trajectories (u multi-step, 2 steps)
+                        # Mean velocity ODE trajectories (2 steps)
                         mean_trajectories_tensor = model.sample_mean_velocity_ode(z_tensor, n_steps=2, device=device)
                         mean_trajectories = mean_trajectories_tensor.squeeze().cpu().numpy()
 
-                        # One-step predictions (mean velocity u)
+                        # One-step predictions (mean velocity)
                         mean_predictions_tensor = model.sample_mean_velocity(z_tensor, device=device)
                         mean_predictions = mean_predictions_tensor.squeeze().cpu().numpy()
 
                         viz_path = os.path.join(viz_output_dir, f'epoch_{epoch+1:04d}.png')
-                        visualize_meanflow(
+                        visualize_imf(
                             z_samples=z_train_viz,
                             x_data=x_train_viz,
                             trajectories=trajectories,
@@ -213,23 +215,23 @@ def train_meanflow(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, 
                     else:  # 2d
                         z_tensor = torch.FloatTensor(z_infer_viz).to(device)
 
-                        # ODE trajectories (instantaneous velocity v)
+                        # ODE trajectories
                         trajectories_tensor = model.sample(z_tensor, n_steps=100, device=device)
-                        trajectories = trajectories_tensor.cpu().numpy()  # (n_steps+1, n_infer, 2)
+                        trajectories = trajectories_tensor.cpu().numpy()
 
-                        # One-step prediction (mean velocity u)
+                        # One-step prediction (mean velocity)
                         mean_onestep_tensor = model.sample_mean_velocity(z_tensor, device=device)
-                        mean_onestep = mean_onestep_tensor.cpu().numpy()  # (n_infer, 2)
+                        mean_onestep = mean_onestep_tensor.cpu().numpy()
 
                         viz_path = os.path.join(viz_output_dir, f'epoch_{epoch+1:04d}.png')
-                        visualize_meanflow_2d(
+                        visualize_imf_2d(
                             trajectories=trajectories,
                             mean_onestep=mean_onestep,
                             z_samples=z_infer_viz,
-                            cfm_type=cfm_type,
                             x_data=x_train_viz,
                             save_path=viz_path,
-                            epoch=epoch + 1
+                            epoch=epoch + 1,
+                            cfm_type=cfm_type
                         )
                 model.train()
 
@@ -241,10 +243,10 @@ def train_meanflow(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, 
 
 if __name__ == '__main__':
     import argparse
-    from visualization.viz_meanflow import visualize_meanflow
+    from visualization.viz_imf import visualize_imf
     from data.synthetic import sample_prior
 
-    parser = argparse.ArgumentParser(description='Train MeanFlow model')
+    parser = argparse.ArgumentParser(description='Train Improved MeanFlow (iMF) model')
     parser.add_argument('--epochs', type=int, default=2000, help='Number of training epochs')
     parser.add_argument('--n_samples', type=int, default=500, help='Number of training samples')
     parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
@@ -264,7 +266,7 @@ if __name__ == '__main__':
     print(f"Using device: {device}")
 
     # Train model
-    model, history = train_meanflow(
+    model, history = train_imf(
         n_samples=args.n_samples,
         epochs=args.epochs,
         lr=args.lr,
@@ -277,7 +279,7 @@ if __name__ == '__main__':
         n_infer=args.n_infer
     )
 
-    save_path = os.path.join(args.output_dir, 'meanflow_model.pt')
+    save_path = os.path.join(args.output_dir, 'imf_model.pt')
     os.makedirs(args.output_dir, exist_ok=True)
     torch.save(model.state_dict(), save_path)
     print(f"\nModel saved to {save_path}")
@@ -306,20 +308,20 @@ if __name__ == '__main__':
     z_infer = sample_prior(n_samples=args.n_infer, seed=args.seed + 1)
 
     with torch.no_grad():
-        # ODE trajectories (instantaneous velocity v)
+        # ODE trajectories
         trajectories_tensor = model.sample(torch.FloatTensor(z_infer).unsqueeze(1).to(device), n_steps=100, device=device)
         trajectories = trajectories_tensor.squeeze().cpu().numpy()
 
-        # Mean velocity ODE trajectories (u multi-step, 2 steps)
+        # Mean velocity ODE trajectories (2 steps)
         mean_trajectories_tensor = model.sample_mean_velocity_ode(torch.FloatTensor(z_infer).unsqueeze(1).to(device), n_steps=2, device=device)
         mean_trajectories = mean_trajectories_tensor.squeeze().cpu().numpy()
 
-        # One-step predictions (mean velocity u)
+        # One-step predictions (mean velocity)
         mean_predictions_tensor = model.sample_mean_velocity(torch.FloatTensor(z_infer).unsqueeze(1).to(device), device=device)
         mean_predictions = mean_predictions_tensor.squeeze().cpu().numpy()
 
-    viz_path = os.path.join(args.output_dir, 'meanflow_visualization.png')
-    visualize_meanflow(
+    viz_path = os.path.join(args.output_dir, 'imf_visualization.png')
+    visualize_imf(
         z_samples=z_train,
         x_data=x_train,
         trajectories=trajectories,

@@ -63,7 +63,7 @@ def one_step_decode_2d(model, z):
     return x_gen
 
 
-def visualize_backflow_2d(trajectories, onestep_samples, x_data, save_path=None, epoch=None):
+def visualize_backflow_2d(trajectories, onestep_samples, x_data, save_path=None, epoch=None, cfm_type=None):
     """
     Visualize BackFlow model in 2D with trajectories
 
@@ -73,6 +73,7 @@ def visualize_backflow_2d(trajectories, onestep_samples, x_data, save_path=None,
         x_data: Training target samples x (n_train, 2)
         save_path: Path to save the figure (optional)
         epoch: Current epoch number (optional, for title)
+        cfm_type: CFM coupling type (optional, for title)
     """
     setup_plot_style()
 
@@ -115,12 +116,19 @@ def visualize_backflow_2d(trajectories, onestep_samples, x_data, save_path=None,
 
     ax.set_xlabel('x₁')
     ax.set_ylabel('x₂')
-    title = f'BackFlow (Epoch {epoch})' if epoch is not None else 'BackFlow'
+    cfm_str = f' ({cfm_type.upper()})' if cfm_type else ''
+    title = f'BackFlow{cfm_str} (Epoch {epoch})' if epoch is not None else f'BackFlow{cfm_str}'
     ax.set_title(title)
     ax.legend(loc='best', framealpha=0.9, fontsize=8)
     ax.grid(True, alpha=0.3)
-    ax.set_xlim(-6, 6)
-    ax.set_ylim(-6, 6)
+    
+    # Set limits based on data range with padding
+    all_x = np.concatenate([x_data[:, 0], trajectories[:, :, 0].flatten(), onestep_samples[:, 0]])
+    all_y = np.concatenate([x_data[:, 1], trajectories[:, :, 1].flatten(), onestep_samples[:, 1]])
+    x_padding = (all_x.max() - all_x.min()) * 0.1
+    y_padding = (all_y.max() - all_y.min()) * 0.1
+    ax.set_xlim(all_x.min() - x_padding, all_x.max() + x_padding)
+    ax.set_ylim(all_y.min() - y_padding, all_y.max() + y_padding)
     ax.set_aspect('equal', adjustable='box')
 
     plt.tight_layout()

@@ -72,7 +72,7 @@ class FlowMatching(nn.Module):
         u_t = x - z  # Conditional velocity (constant for linear interpolation)
         return x_t, u_t
 
-    def loss_function(self, z, x, t):
+    def loss_function(self, z, x, t, weights=None):
         """
         Compute Flow Matching loss: ||v_θ(x_t, t) - u_t||^2
 
@@ -80,6 +80,7 @@ class FlowMatching(nn.Module):
             z: Source samples from N(0, I) (batch_size, input_dim)
             x: Target data samples (batch_size, input_dim)
             t: Time (batch_size, 1)
+            weights: Optional loss weights for UOTRFM (batch_size,)
 
         Returns:
             loss: Flow matching loss
@@ -91,7 +92,13 @@ class FlowMatching(nn.Module):
         v_pred = self.forward(x_t, t)
 
         # MSE loss between predicted and true velocity
-        loss = nn.functional.mse_loss(v_pred, u_t, reduction='mean')
+        if weights is not None:
+            # Weighted loss for UOTRFM
+            # weights shape: (batch_size,), need to reshape for broadcasting
+            weights = weights.view(-1, 1)  # (batch_size, 1)
+            loss = (weights * (v_pred - u_t) ** 2).mean()
+        else:
+            loss = nn.functional.mse_loss(v_pred, u_t, reduction='mean')
 
         return loss
 

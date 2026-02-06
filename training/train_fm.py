@@ -13,10 +13,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models.flow_matching import FlowMatching
 from data.synthetic import generate_data, generate_data_2d
+from utils.cfm_sampler import create_cfm_sampler
 
 
 def train_fm(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, device='cpu',
-             viz_freq=200, save_dir='/home/user/Desktop/Gen_Study/outputs', dim='1d'):
+             viz_freq=200, save_dir='/home/user/Desktop/Gen_Study/outputs', dim='1d',
+             cfm_type='icfm', cfm_reg=0.05, cfm_reg_m=(float('inf'), 2.0), cfm_weight_power=10.0,
+             dataset_2d='2gauss', lr_scheduler='cosine', lr_scheduler_params=None):
     """
     Train Flow Matching model
 
@@ -30,6 +33,10 @@ def train_fm(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, device
         viz_freq: Frequency to save visualizations (every N epochs)
         save_dir: Directory to save visualizations
         dim: Dimension ('1d' or '2d')
+        cfm_type: CFM coupling type ('icfm', 'otcfm', 'uotcfm', 'uotrfm')
+        cfm_reg: Entropic regularization for Sinkhorn
+        cfm_reg_m: Marginal regularization for unbalanced OT
+        cfm_weight_power: Power factor for UOTRFM weights
 
     Returns:
         model: Trained flow matching model
@@ -41,7 +48,16 @@ def train_fm(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, device
 
     print("=" * 60)
     print("Training Flow Matching Model")
+    print(f"CFM Type: {cfm_type.upper()}")
     print("=" * 60)
+
+    # Create CFM sampler
+    cfm_sampler = create_cfm_sampler(
+        cfm_type=cfm_type,
+        reg=cfm_reg,
+        reg_m=cfm_reg_m,
+        weight_power=cfm_weight_power
+    )
 
     # Determine input dimension
     input_dim = 1 if dim == '1d' else 2
@@ -52,7 +68,7 @@ def train_fm(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, device
         x_data = generate_data(n_samples=n_samples, seed=seed)
         x_data = torch.FloatTensor(x_data).unsqueeze(1).to(device)
     else:  # 2d
-        x_data = generate_data_2d(n_samples=n_samples, seed=seed)
+        x_data = generate_data_2d(n_samples=n_samples, seed=seed, dataset=dataset_2d)
         x_data = torch.FloatTensor(x_data).to(device)
 
     # Create model
@@ -61,6 +77,24 @@ def train_fm(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, device
 
     # Optimizer
     optimizer = optim.Adam(model.parameters(), lr=lr)
+    
+    # Learning rate scheduler
+    if lr_scheduler_params is None:
+        lr_scheduler_params = {}
+    
+    if lr_scheduler == 'cosine':
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=lr*0.01, **lr_scheduler_params)
+    elif lr_scheduler == 'step':
+        step_size = lr_scheduler_params.get('step_size', epochs // 3)
+        gamma = lr_scheduler_params.get('gamma', 0.5)
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
+    elif lr_scheduler == 'exponential':
+        gamma = lr_scheduler_params.get('gamma', 0.995)
+        scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
+    elif lr_scheduler == 'none' or lr_scheduler is None:
+        scheduler = None
+    else:
+        raise ValueError(f"Unknown lr_scheduler: {lr_scheduler}")
 
     # Training loop
     history = {'loss': []}
@@ -81,7 +115,7 @@ def train_fm(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, device
     if dim == '1d':
         x_train_viz = generate_data(n_samples=n_samples, seed=seed)
     else:
-        x_train_viz = generate_data_2d(n_samples=n_samples, seed=seed)
+        x_train_viz = generate_data_2d(n_samples=n_samples, seed=seed, dataset=dataset_2d)
     coupling_indices_viz = np.random.permutation(n_samples)
 
     n_infer = 200
@@ -105,8 +139,11 @@ def train_fm(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, device
             z_batch = torch.randn(batch_size_actual, input_dim).to(device)
             t_batch = torch.rand(batch_size_actual, 1).to(device)
 
+            # Apply CFM coupling
+            z_coupled, x_coupled, weights = cfm_sampler.sample_coupling(z_batch, x_batch)
+
             optimizer.zero_grad()
-            loss = model.loss_function(z_batch, x_batch, t_batch)
+            loss = model.loss_function(z_coupled, x_coupled, t_batch, weights=weights)
             loss.backward()
             optimizer.step()
 
@@ -114,9 +151,14 @@ def train_fm(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, device
 
         epoch_loss /= n_samples
         history['loss'].append(epoch_loss)
+        
+        # Update learning rate
+        if scheduler is not None:
+            scheduler.step()
 
         if (epoch + 1) % 200 == 0 or epoch == 0:
-            print(f"Epoch [{epoch+1}/{epochs}], Loss: {epoch_loss:.6f}")
+            current_lr = optimizer.param_groups[0]['lr']
+            print(f"Epoch [{epoch+1}/{epochs}], Loss: {epoch_loss:.6f}, LR: {current_lr:.6e}")
 
         # Generate visualization every viz_freq epochs
         if (epoch + 1) % viz_freq == 0 or epoch == 0:
@@ -150,7 +192,8 @@ def train_fm(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, device
                         trajectories=trajectories,
                         x_data=x_train_viz,
                         save_path=viz_path,
-                        epoch=epoch + 1
+                        epoch=epoch + 1,
+                        cfm_type=cfm_type
                     )
             model.train()
 

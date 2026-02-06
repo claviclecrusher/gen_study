@@ -2,6 +2,7 @@
 Synthetic data generator for 1D and 2D Gaussian mixtures
 """
 import numpy as np
+from sklearn.datasets import make_moons
 
 
 # 1D Gaussian parameters
@@ -17,6 +18,12 @@ MEAN_2_2D = np.array([2.0, 2.0])
 COV_1_2D = np.array([[0.5, 0.0], [0.0, 0.5]])  # Independent
 COV_2_2D = np.array([[0.3, 0.15], [0.15, 0.3]])  # Some correlation
 MIX_RATIO_2D = 0.6  # 60% from Gaussian 1, 40% from Gaussian 2
+
+# Shifted 2D Gaussian parameters (both shifted to the right, same X coordinate)
+SHIFT_X = 5.5  # Shift amount to the right
+MEAN_X_SHIFTED = 5.5  # Common X coordinate for both Gaussians
+MEAN_1_SHIFTED_2D = np.array([MEAN_X_SHIFTED, -2.5])  # [3.0, -2.0]
+MEAN_2_SHIFTED_2D = np.array([MEAN_X_SHIFTED, 2.5])   # [3.0, 2.0]
 
 
 def generate_data(n_samples=500, seed=None):
@@ -71,13 +78,14 @@ def sample_prior(n_samples=500, seed=None, dim=1):
         raise ValueError(f"Unsupported dimension: {dim}")
 
 
-def generate_data_2d(n_samples=500, seed=None):
+def generate_data_2d(n_samples=500, seed=None, dataset='2gauss'):
     """
-    Generate 2D samples from 2-Gaussian mixture
+    Generate 2D samples from various datasets
 
     Args:
         n_samples: Number of samples to generate
         seed: Random seed for reproducibility
+        dataset: Dataset type ('2gauss' or 'two_moon')
 
     Returns:
         numpy array of shape (n_samples, 2) containing 2D samples
@@ -85,17 +93,45 @@ def generate_data_2d(n_samples=500, seed=None):
     if seed is not None:
         np.random.seed(seed)
 
-    # Determine number of samples from each Gaussian
-    n_samples_1 = int(n_samples * MIX_RATIO_2D)
-    n_samples_2 = n_samples - n_samples_1
+    if dataset == '2gauss':
+        # Determine number of samples from each Gaussian
+        n_samples_1 = int(n_samples * MIX_RATIO_2D)
+        n_samples_2 = n_samples - n_samples_1
 
-    # Generate samples from each Gaussian
-    samples_1 = np.random.multivariate_normal(MEAN_1_2D, COV_1_2D, n_samples_1)
-    samples_2 = np.random.multivariate_normal(MEAN_2_2D, COV_2_2D, n_samples_2)
+        # Generate samples from each Gaussian
+        samples_1 = np.random.multivariate_normal(MEAN_1_2D, COV_1_2D, n_samples_1)
+        samples_2 = np.random.multivariate_normal(MEAN_2_2D, COV_2_2D, n_samples_2)
 
-    # Combine and shuffle
-    samples = np.vstack([samples_1, samples_2])
-    np.random.shuffle(samples)
+        # Combine and shuffle
+        samples = np.vstack([samples_1, samples_2])
+        np.random.shuffle(samples)
+        
+    elif dataset == 'shifted_2gauss':
+        # Shifted version: both Gaussians shifted to the right
+        # Determine number of samples from each Gaussian
+        n_samples_1 = int(n_samples * MIX_RATIO_2D)
+        n_samples_2 = n_samples - n_samples_1
+
+        # Generate samples from each Gaussian (using same covariance as 2gauss)
+        samples_1 = np.random.multivariate_normal(MEAN_1_SHIFTED_2D, COV_1_2D, n_samples_1)
+        samples_2 = np.random.multivariate_normal(MEAN_2_SHIFTED_2D, COV_2_2D, n_samples_2)
+
+        # Combine and shuffle
+        samples = np.vstack([samples_1, samples_2])
+        np.random.shuffle(samples)
+        
+    elif dataset == 'two_moon':
+        # Generate two moons dataset using sklearn
+        X, y = make_moons(n_samples=n_samples, noise=0.1, random_state=seed)
+        
+        # Scale and shift the data: make it wider and shift X-axis by +2
+        # Original moons are in [-1, 1] range, scale wider and shift
+        scaling_factor = 4.0  # Wider distribution
+        samples = (X - X.mean(axis=0)) / X.std(axis=0) * scaling_factor
+        samples[:, 0] += 2.0  # Shift X-axis by +2
+        
+    else:
+        raise ValueError(f"Unknown dataset type: {dataset}. Supported types: '2gauss', 'shifted_2gauss', 'two_moon'")
 
     return samples
 

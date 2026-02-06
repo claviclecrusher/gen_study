@@ -44,7 +44,7 @@ def prepare_r_t(batch_size, device):
     return r, t
 
 
-def compute_imf_loss(model, x):
+def compute_imf_loss(model, x, e=None, cfm_weights=None):
     """
     Compute the Instantaneous Mean Flow (IMF) loss.
     This is the EXACT algorithm from original code (lines 246-278).
@@ -56,6 +56,12 @@ def compute_imf_loss(model, x):
     4. Use JVP to compute du/dt
     5. Compute V_theta = u_theta + (t - r) * du/dt
     6. Use weighted MSE loss
+
+    Args:
+        model: BackFlow model
+        x: Data samples (B, D)
+        e: Optional noise samples for CFM coupling (B, D)
+        cfm_weights: Optional loss weights for UOTRFM (B,)
     """
     device = x.device
     B = x.shape[0]
@@ -63,8 +69,9 @@ def compute_imf_loss(model, x):
     # Sample r, t
     r, t = prepare_r_t(B, device)
 
-    # Sample noise
-    e = torch.randn_like(x)
+    # Sample noise (or use provided noise for CFM coupling)
+    if e is None:
+        e = torch.randn_like(x)
 
     # Interpolate: z_t = (1-t)*x + t*e
     t_broad = t.view(B, 1)
@@ -105,6 +112,12 @@ def compute_imf_loss(model, x):
     c = 1e-3
     p = CONFIG["p_loss"]
     w = 1 / (loss_sum + c).pow(p)
+
+    # Apply CFM weights if provided (UOTRFM)
+    if cfm_weights is not None:
+        cfm_weights = cfm_weights.view(-1)  # Ensure 1D
+        w = w * cfm_weights
+
     loss = (w.detach() * loss_sum).mean()
 
     return loss
@@ -114,7 +127,9 @@ def compute_imf_loss(model, x):
 # Training Function
 # ==============================================================================
 def train_backflow(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, device='cpu',
-                   viz_freq=200, save_dir='/home/user/Desktop/Gen_Study/outputs', dim='1d'):
+                   viz_freq=200, save_dir='/home/user/Desktop/Gen_Study/outputs', dim='1d',
+                   cfm_type='icfm', cfm_reg=0.05, cfm_reg_m=(float('inf'), 2.0), cfm_weight_power=10.0,
+                   dataset_2d='2gauss', lr_scheduler='cosine', lr_scheduler_params=None):
     """
     Train BackFlow model.
 
@@ -128,6 +143,10 @@ def train_backflow(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, 
         viz_freq: Frequency to save visualizations (every N epochs)
         save_dir: Directory to save visualizations
         dim: Dimension ('1d' or '2d')
+        cfm_type: CFM coupling type ('icfm', 'otcfm', 'uotcfm', 'uotrfm')
+        cfm_reg: Entropic regularization for Sinkhorn
+        cfm_reg_m: Marginal regularization for unbalanced OT
+        cfm_weight_power: Power factor for UOTRFM weights
 
     Returns:
         model: Trained model
@@ -136,6 +155,7 @@ def train_backflow(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, 
     import os
     from data.synthetic import generate_data, generate_data_2d, sample_prior
     from models.backflow import BackFlow
+    from utils.cfm_sampler import create_cfm_sampler
 
     if dim == '1d':
         from visualization.viz_backflow import visualize_backflow, compute_trajectories, one_step_decode
@@ -154,7 +174,7 @@ def train_backflow(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, 
         x_data = generate_data(n_samples=n_samples, seed=seed)
         x_tensor = torch.FloatTensor(x_data).unsqueeze(1).to(device)
     else:  # 2d
-        x_data = generate_data_2d(n_samples=n_samples, seed=seed)
+        x_data = generate_data_2d(n_samples=n_samples, seed=seed, dataset=dataset_2d)
         x_tensor = torch.FloatTensor(x_data).to(device)
 
     # Create model
@@ -162,6 +182,24 @@ def train_backflow(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, 
 
     # Optimizer (same as original)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    
+    # Learning rate scheduler
+    if lr_scheduler_params is None:
+        lr_scheduler_params = {}
+    
+    if lr_scheduler == 'cosine':
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=lr*0.01, **lr_scheduler_params)
+    elif lr_scheduler == 'step':
+        step_size = lr_scheduler_params.get('step_size', epochs // 3)
+        gamma = lr_scheduler_params.get('gamma', 0.5)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
+    elif lr_scheduler == 'exponential':
+        gamma = lr_scheduler_params.get('gamma', 0.995)
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
+    elif lr_scheduler == 'none' or lr_scheduler is None:
+        scheduler = None
+    else:
+        raise ValueError(f"Unknown lr_scheduler: {lr_scheduler}")
 
     # Training loop
     losses = []
@@ -183,7 +221,15 @@ def train_backflow(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, 
     # Create visualization directory
     os.makedirs(save_dir, exist_ok=True)
 
-    print("Training BackFlow...")
+    # Create CFM sampler
+    cfm_sampler = create_cfm_sampler(
+        cfm_type=cfm_type,
+        reg=cfm_reg,
+        reg_m=cfm_reg_m,
+        weight_power=cfm_weight_power
+    )
+
+    print(f"Training BackFlow... (CFM Type: {cfm_type.upper()})")
     pbar = tqdm(range(epochs), desc="Training")
 
     for epoch in pbar:
@@ -192,8 +238,14 @@ def train_backflow(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, 
         n_batches = 0
 
         for (batch_x,) in dataloader:
-            # Compute loss using EXACT algorithm
-            loss = compute_imf_loss(model, batch_x)
+            # Sample noise for CFM coupling
+            batch_e = torch.randn_like(batch_x)
+
+            # Apply CFM coupling (e=noise, x=data)
+            e_coupled, x_coupled, weights = cfm_sampler.sample_coupling(batch_e, batch_x)
+
+            # Compute loss using EXACT algorithm with coupled samples
+            loss = compute_imf_loss(model, x_coupled, e=e_coupled, cfm_weights=weights)
 
             # Backward
             optimizer.zero_grad()
@@ -209,9 +261,14 @@ def train_backflow(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, 
 
         avg_loss = epoch_loss / n_batches
         losses.append(avg_loss)
+        
+        # Update learning rate
+        if scheduler is not None:
+            scheduler.step()
 
         if (epoch + 1) % 100 == 0:
-            pbar.set_description(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.6f}")
+            current_lr = optimizer.param_groups[0]['lr']
+            pbar.set_description(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.6f}, LR: {current_lr:.6e}")
 
         # Generate visualization every viz_freq epochs
         if (epoch + 1) % viz_freq == 0 or epoch == 0:
@@ -249,7 +306,8 @@ def train_backflow(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, 
                         onestep_samples=x_generated_onestep,
                         x_data=x_data,
                         save_path=viz_path,
-                        epoch=epoch + 1
+                        epoch=epoch + 1,
+                        cfm_type=cfm_type
                     )
 
     print(f"Training complete. Final loss: {losses[-1]:.6f}")

@@ -4,7 +4,7 @@ Training script for FACM model (1D/2D).
 
 import os
 import sys
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data.synthetic import generate_data, generate_data_2d, sample_prior
 from models.facm import FACM, FACMConfig
+from utils.cfm_sampler import create_cfm_sampler
 
 
 def train_facm(
@@ -32,6 +33,13 @@ def train_facm(
     sampler_steps: int = 100,
     sampler_heun: bool = False,
     timestep_shift: float = 0.0,
+    cfm_type: str = 'icfm',
+    cfm_reg: float = 0.05,
+    cfm_reg_m: Tuple[float, float] = (float('inf'), 2.0),
+    cfm_weight_power: float = 10.0,
+    dataset_2d: str = "2gauss",
+    lr_scheduler: str = "cosine",
+    lr_scheduler_params: Optional[dict] = None,
 ):
     """
     Train FACM model.
@@ -44,7 +52,16 @@ def train_facm(
 
     print("=" * 60)
     print("Training FACM Model")
+    print(f"CFM Type: {cfm_type.upper()}")
     print("=" * 60)
+
+    # Create CFM sampler
+    cfm_sampler = create_cfm_sampler(
+        cfm_type=cfm_type,
+        reg=cfm_reg,
+        reg_m=cfm_reg_m,
+        weight_power=cfm_weight_power
+    )
 
     input_dim = 1 if dim == "1d" else 2
 
@@ -53,13 +70,31 @@ def train_facm(
         x_data = generate_data(n_samples=n_samples, seed=seed)
         x_data = torch.FloatTensor(x_data).unsqueeze(1).to(device)
     else:
-        x_data = generate_data_2d(n_samples=n_samples, seed=seed)
+        x_data = generate_data_2d(n_samples=n_samples, seed=seed, dataset=dataset_2d)
         x_data = torch.FloatTensor(x_data).to(device)
 
     model = FACM(input_dim=input_dim).to(device)
     print(f"Model created with {sum(p.numel() for p in model.parameters())} parameters")
 
     optimizer = optim.Adam(model.parameters(), lr=lr)
+    
+    # Learning rate scheduler
+    if lr_scheduler_params is None:
+        lr_scheduler_params = {}
+    
+    if lr_scheduler == 'cosine':
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=lr*0.01, **lr_scheduler_params)
+    elif lr_scheduler == 'step':
+        step_size = lr_scheduler_params.get('step_size', epochs // 3)
+        gamma = lr_scheduler_params.get('gamma', 0.5)
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
+    elif lr_scheduler == 'exponential':
+        gamma = lr_scheduler_params.get('gamma', 0.995)
+        scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
+    elif lr_scheduler == 'none' or lr_scheduler is None:
+        scheduler = None
+    else:
+        raise ValueError(f"Unknown lr_scheduler: {lr_scheduler}")
 
     if loss_config is None:
         loss_config = FACMConfig()
@@ -74,7 +109,7 @@ def train_facm(
         os.makedirs(viz_output_dir, exist_ok=True)
 
         z_train_viz = sample_prior(n_samples=n_samples, seed=seed, dim=input_dim)
-        x_train_viz = generate_data(n_samples=n_samples, seed=seed) if dim == "1d" else generate_data_2d(n_samples=n_samples, seed=seed)
+        x_train_viz = generate_data(n_samples=n_samples, seed=seed) if dim == "1d" else generate_data_2d(n_samples=n_samples, seed=seed, dataset=dataset_2d)
         coupling_indices_viz = np.random.permutation(n_samples)
 
         z_infer_viz = sample_prior(n_samples=n_infer, seed=seed + 1, dim=input_dim)
@@ -102,8 +137,14 @@ def train_facm(
 
             x_batch = x_shuffled[start_idx:end_idx]
 
+            # Sample noise for CFM coupling
+            z_batch = torch.randn(bs, input_dim).to(device)
+
+            # Apply CFM coupling (z=noise, x=data)
+            z_coupled, x_coupled, weights = cfm_sampler.sample_coupling(z_batch, x_batch)
+
             optimizer.zero_grad()
-            total, cm, fm = model.loss_function(x_batch, config=loss_config)
+            total, cm, fm = model.loss_function(x_coupled, config=loss_config, z=z_coupled, weights=weights)
             total.backward()
             optimizer.step()
 
@@ -117,10 +158,15 @@ def train_facm(
         history["loss"].append(epoch_total)
         history["cm_loss"].append(epoch_cm)
         history["fm_loss"].append(epoch_fm)
+        
+        # Update learning rate
+        if scheduler is not None:
+            scheduler.step()
 
         if (epoch + 1) % 200 == 0 or epoch == 0:
+            current_lr = optimizer.param_groups[0]['lr']
             print(
-                f"Epoch [{epoch+1}/{epochs}], Loss: {epoch_total:.6f} (CM {epoch_cm:.6f}, FM {epoch_fm:.6f})"
+                f"Epoch [{epoch+1}/{epochs}], Loss: {epoch_total:.6f} (CM {epoch_cm:.6f}, FM {epoch_fm:.6f}), LR: {current_lr:.6e}"
             )
 
         # Intermediate visualization
@@ -165,6 +211,7 @@ def train_facm(
                         x_data=x_train_viz,
                         save_path=viz_path,
                         epoch=epoch + 1,
+                        cfm_type=cfm_type
                     )
             model.train()
 
