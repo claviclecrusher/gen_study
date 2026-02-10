@@ -1,3 +1,4 @@
 outputs/
 paper/
 _facm_ref/
+nohup*.out

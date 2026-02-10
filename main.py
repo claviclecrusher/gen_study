@@ -21,6 +21,7 @@ from models.backflow import BackFlow
 from models.improved_mean_flow import ImprovedMeanFlow
 from models.tdmf import TDMF
 from models.topk_fm import TopKFlowMatching
+from models.novae import NOVAE
 from training.train_decoder import train_decoder
 from training.train_ae import train_autoencoder
 from training.train_vae import train_vae
@@ -31,6 +32,7 @@ from training.train_tdmf import train_tdmf
 from training.train_facm import train_facm
 from training.train_backflow import train_backflow
 from training.train_topk_fm import train_topk_fm
+from training.train_novae import train_novae
 from visualization.viz_decoder import visualize_decoder
 from visualization.viz_ae import visualize_autoencoder
 from visualization.viz_vae import visualize_vae
@@ -46,6 +48,7 @@ from visualization.viz_backflow import (
     compute_trajectories
 )
 from visualization.viz_topk_fm import visualize_topk_fm
+from visualization.viz_novae import visualize_novae
 
 
 def run_experiment(model_type, n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, device='cpu',
@@ -54,7 +57,7 @@ def run_experiment(model_type, n_samples=500, epochs=2000, lr=1e-3, batch_size=6
                    topk_pretrain_epochs=150, top_filter_k=0.5, ode_solver='dopri5', ode_tol=1e-5):
     """
     Args:
-        model_type (str): Type of model to run ('decoder', 'ae', 'vae', 'vae_beta', 'fm', 'meanflow', 'imf', 'facm', 'backflow').
+        model_type (str): Type of model to run ('decoder', 'ae', 'vae', 'vae_beta', 'fm', 'meanflow', 'imf', 'facm', 'backflow', 'novae').
         cfm_type (str): CFM coupling type ('icfm', 'otcfm', 'uotcfm', 'uotrfm')
         cfm_reg (float): Entropic regularization for Sinkhorn
         cfm_reg_m (tuple): Marginal regularization for unbalanced OT
@@ -516,6 +519,61 @@ def run_experiment(model_type, n_samples=500, epochs=2000, lr=1e-3, batch_size=6
             is_pretraining=False
         )
 
+    elif model_type == 'novae':
+        # ========================================
+        # 10. NO-VAE (Noise Oriented VAE)
+        # ========================================
+        novae_model_path = '/home/user/Desktop/Gen_Study/outputs/novae_model.pt'
+        if os.path.exists(novae_model_path):
+            print(f"Loading existing model from {novae_model_path}")
+            model = NOVAE(input_dim=1, latent_dim=1).to(device)
+            model.load_state_dict(torch.load(novae_model_path, map_location=device))
+        else:
+            print("Training new model...")
+            model, _ = train_novae(
+                n_samples=n_samples, epochs=epochs, lr=lr,
+                batch_size=batch_size, seed=seed, device=device,
+                coupling_method='sinkhorn',
+                sinkhorn_reg=0.05,
+                sinkhorn_reg_schedule='cosine',
+                sinkhorn_reg_init=1.0,
+                sinkhorn_reg_final=0.01,
+                z_recon_weight=1.0
+            )
+            torch.save(model.state_dict(), novae_model_path)
+
+        model.eval()
+        print("\nPreparing NO-VAE visualization...")
+        x_data = generate_data(n_samples=n_samples, seed=seed)
+
+        # Encode training data to see encoder output distribution
+        with torch.no_grad():
+            x_tensor = torch.FloatTensor(x_data).unsqueeze(1).to(device)
+            z_ = model.encode(x_tensor).squeeze().cpu().numpy()
+
+            # Reconstruct through full pipeline (encode -> soft NN -> decode)
+            z_prior_viz = torch.randn(model.n_prior_samples, 1).to(device)
+            x_hat_out, _, z_sel, _ = model(x_tensor, z_prior_viz)
+            x_hat = x_hat_out.squeeze().cpu().numpy()
+
+        # Inference: sample from prior and decode
+        n_infer = 200
+        z_infer = sample_prior(n_samples=n_infer, seed=seed + 5)
+        with torch.no_grad():
+            x_infer = model.decode(
+                torch.FloatTensor(z_infer).unsqueeze(1).to(device)
+            ).squeeze().cpu().numpy()
+
+        visualize_novae(
+            z_prior=sample_prior(n_samples, seed=seed + 4),
+            x_data=x_data,
+            z_=z_,
+            x_hat=x_hat,
+            z_infer=z_infer,
+            x_infer=x_infer,
+            save_path='/home/user/Desktop/Gen_Study/outputs/novae_visualization.png',
+        )
+
     print("\n" + "=" * 80)
     print(f"EXPERIMENT {model_type.upper()} COMPLETE!")
     print("=" * 80)
@@ -527,7 +585,7 @@ if __name__ == "__main__":
         '--model',
         type=str,
         default='all',
-        choices=['all', 'decoder', 'ae', 'vae', 'vae_beta', 'fm', 'meanflow', 'imf', 'tdmf', 'facm', 'backflow', 'topk_fm'],
+        choices=['all', 'decoder', 'ae', 'vae', 'vae_beta', 'fm', 'meanflow', 'imf', 'tdmf', 'facm', 'backflow', 'topk_fm', 'novae'],
         help='Specify which model to run.'
     )
     parser.add_argument(
@@ -618,7 +676,7 @@ if __name__ == "__main__":
     print("\n" + "=" * 80)
 
     if args.model == 'all':
-        all_models = ['decoder', 'ae', 'vae', 'vae_beta', 'fm', 'meanflow', 'imf', 'tdmf', 'facm', 'backflow', 'topk_fm']
+        all_models = ['decoder', 'ae', 'vae', 'vae_beta', 'fm', 'meanflow', 'imf', 'tdmf', 'facm', 'backflow', 'topk_fm', 'novae']
         for model_type in all_models:
             run_experiment(model_type, **params)
     else:

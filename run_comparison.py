@@ -81,8 +81,12 @@ def create_comparison_grid(model_dirs, epoch, output_path, dim='1d', subplot_spa
         'tdmf': 'TDMF (Translation Decoupled)',
         'facm': 'FACM',
         'backflow': 'BackFlow',
-        'topk_fm': 'TopK-OTCFM'
+        'topk_fm': 'TopK-OTCFM',
+        'novae': 'NO-VAE'
     }
+
+    # Models that use CFM coupling (NO-VAE does not)
+    cfm_models = {'fm', 'meanflow', 'imf', 'tdmf', 'facm', 'backflow', 'topk_fm'}
 
     for ax, model_key in zip(axes, available_models):
         # Extract model name and CFM type from model_key
@@ -112,13 +116,17 @@ def create_comparison_grid(model_dirs, epoch, output_path, dim='1d', subplot_spa
                     break
         
         title = model_title_map.get(model_name, model_name)
-        # Add CFM type to title if found
-        if cfm_type:
+        # Add CFM type to title if found (skip for non-CFM models like NO-VAE)
+        if cfm_type and model_name in cfm_models:
             title = f'{title} ({cfm_type.upper()})'
         
         # TopK-OTCFM uses different filename format
         if model_name == 'topk_fm':
             img_path = os.path.join(model_dirs[model_key], f'topk_fm_epoch_{epoch:04d}.png')
+        elif model_name == 'novae':
+            # NO-VAE uses separate reconstruction and generation visualizations
+            # Use reconstruction for comparison
+            img_path = os.path.join(model_dirs[model_key], f'epoch_{epoch:04d}_recon.png')
         else:
             img_path = os.path.join(model_dirs[model_key], f'epoch_{epoch:04d}.png')
 
@@ -138,6 +146,105 @@ def create_comparison_grid(model_dirs, epoch, output_path, dim='1d', subplot_spa
     plt.close()
 
 
+def create_comparison_grid_recon_gen(model_dirs, epoch, output_path, dim='1d', subplot_spacing=0.0):
+    """
+    Create a grid comparing auto-encoder based models with recon and gen side-by-side
+    
+    Args:
+        model_dirs: Dict with model names as keys and directories as values
+        epoch: Epoch number
+        output_path: Path to save the comparison image
+        dim: '1d' or '2d'
+        subplot_spacing: Horizontal spacing between subplots (default: 0.0)
+    """
+    # Auto-encoder based methods (have separate recon and gen visualizations)
+    ae_models = {'novae'}  # Add other auto-encoder models here if needed
+    
+    # Filter to only auto-encoder models
+    available_models = [k for k in model_dirs.keys() 
+                       if any(k.startswith(m) or k.split('_')[0] == m for m in ae_models)]
+    
+    if len(available_models) == 0:
+        print("No auto-encoder models to compare")
+        return
+    
+    n_models = len(available_models)
+    
+    # Create subplots: 2 columns (recon, gen) for each model
+    fig, axes = plt.subplots(n_models, 2, figsize=(10, 4.5*n_models))
+    if n_models == 1:
+        axes = axes.reshape(1, -1)  # Make it 2D
+    
+    plt.subplots_adjust(wspace=subplot_spacing, hspace=0.3)
+    
+    model_title_map = {
+        'novae': 'NO-VAE'
+    }
+    
+    # Models that use CFM coupling (NO-VAE does not)
+    cfm_models = {'fm', 'meanflow', 'imf', 'tdmf', 'facm', 'backflow', 'topk_fm'}
+    
+    for row_idx, model_key in enumerate(available_models):
+        # Extract model name and CFM type from model_key
+        parts = model_key.split('_')
+        cfm_types_list = ['icfm', 'otcfm', 'uotcfm', 'uotrfm']
+        
+        # Find CFM type
+        cfm_type = None
+        cfm_idx = -1
+        for i, part in enumerate(parts):
+            if part in cfm_types_list:
+                cfm_type = part
+                cfm_idx = i
+                break
+        
+        # Extract model name
+        if cfm_idx > 0:
+            model_name = '_'.join(parts[:cfm_idx])
+        else:
+            model_name = model_key
+            for m in sorted(model_title_map.keys(), key=len, reverse=True):
+                if model_key.startswith(m):
+                    model_name = m
+                    break
+        
+        title = model_title_map.get(model_name, model_name)
+        # Add CFM type to title if found (skip for non-CFM models like NO-VAE)
+        if cfm_type and model_name in cfm_models:
+            title = f'{title} ({cfm_type.upper()})'
+        
+        # Load recon and gen images
+        recon_path = os.path.join(model_dirs[model_key], f'epoch_{epoch:04d}_recon.png')
+        gen_path = os.path.join(model_dirs[model_key], f'epoch_{epoch:04d}_gen.png')
+        
+        # Left subplot: Reconstruction
+        ax_recon = axes[row_idx, 0]
+        if os.path.exists(recon_path):
+            img_recon = Image.open(recon_path)
+            ax_recon.imshow(img_recon)
+            ax_recon.set_title(f'{title} - Recon (Epoch {epoch})', fontsize=12)
+        else:
+            ax_recon.text(0.5, 0.5, f'No recon image\nfor epoch {epoch}',
+                         ha='center', va='center', transform=ax_recon.transAxes)
+        ax_recon.axis('off')
+        
+        # Right subplot: Generation
+        ax_gen = axes[row_idx, 1]
+        if os.path.exists(gen_path):
+            img_gen = Image.open(gen_path)
+            ax_gen.imshow(img_gen)
+            ax_gen.set_title(f'{title} - Gen (Epoch {epoch})', fontsize=12)
+        else:
+            ax_gen.text(0.5, 0.5, f'No gen image\nfor epoch {epoch}',
+                       ha='center', va='center', transform=ax_gen.transAxes)
+        ax_gen.axis('off')
+    
+    plt.suptitle(f'{dim.upper()} Auto-Encoder Comparison - Epoch {epoch}', fontsize=16, y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+
 def run_experiments(dim='1d', epochs=100, n_samples=500, lr=1e-3, batch_size=64,
                    seed=42, device='cpu', models=['fm', 'meanflow', 'imf', 'facm', 'backflow'],
                    cfm_types=None, cfm_reg=0.05, cfm_reg_m=(float('inf'), 2.0), cfm_weight_power=10.0,
@@ -145,7 +252,9 @@ def run_experiments(dim='1d', epochs=100, n_samples=500, lr=1e-3, batch_size=64,
                    topk_pretrain_epochs=150, top_filter_k=0.5, 
                    top_filter_k_schedule='fixed', top_filter_k_start=1.0, top_filter_k_end=0.1,
                    ode_solver='dopri5', ode_tol=1e-5, dataset_2d='2gauss',
-                   lr_scheduler='cosine', lr_scheduler_params=None):
+                   lr_scheduler='cosine', lr_scheduler_params=None,
+                   novae_use_soft_coupling=False, novae_z_recon_weight=1.0,
+                   novae_coupling_method='sinkhorn'):
     """
     Run experiments for specified models in 1D or 2D
 
@@ -198,6 +307,11 @@ def run_experiments(dim='1d', epochs=100, n_samples=500, lr=1e-3, batch_size=64,
         if model_key in model_dirs:
             # If duplicate, add index
             model_key = f'{model_name}_{cfm_type}_{idx}'
+        
+        # For novae, add coupling method to folder name
+        if model_name == 'novae':
+            model_key = f'{model_key}_{novae_coupling_method}'
+        
         model_dir = os.path.join(save_dir, f'{model_key}_epochs')
         model_dirs[model_key] = model_dir
         os.makedirs(model_dir, exist_ok=True)
@@ -358,6 +472,36 @@ def run_experiments(dim='1d', epochs=100, n_samples=500, lr=1e-3, batch_size=64,
                 lr_scheduler_params=lr_scheduler_params
             )
 
+        elif model_name == 'novae':
+            from training.train_novae import train_novae
+            model, _ = train_novae(
+                n_samples=n_samples,
+                epochs=epochs,
+                lr=lr,
+                batch_size=batch_size,
+                seed=seed,
+                device=device,
+                viz_freq=1,  # Every epoch
+                save_dir=model_dir,
+                dim=dim,
+                dataset_2d=dataset_2d if dim == '2d' else '2gauss',
+                coupling_method=novae_coupling_method,
+                sinkhorn_reg=0.05,
+                sinkhorn_reg_schedule='cosine',
+                sinkhorn_reg_init=1.0,
+                sinkhorn_reg_final=0.01,
+                sinkhorn_use_soft_coupling=novae_use_soft_coupling,
+                z_recon_weight=novae_z_recon_weight,
+                temperature=0.1,
+                temperature_schedule='cosine',
+                temperature_init=0.01,
+                temperature_final=0.0,
+                use_ste=False,
+                alignment_weight=1.0,
+                lr_scheduler=lr_scheduler,
+                lr_scheduler_params=lr_scheduler_params
+            )
+
     # Create comparison GIFs
     print("\n" + "="*80)
     print("Creating comparison visualizations and GIFs")
@@ -371,9 +515,48 @@ def run_experiments(dim='1d', epochs=100, n_samples=500, lr=1e-3, batch_size=64,
         comparison_path = os.path.join(comparison_dir, f'epoch_{epoch:04d}.png')
         create_comparison_grid(model_dirs, epoch, comparison_path, dim=dim)
 
+    # Extract NOVAE coupling method from model_dirs for GIF naming
+    novae_coupling_method = None
+    for key in model_dirs.keys():
+        if 'novae' in key:
+            # Extract coupling method from key (format: novae_icfm_{coupling_method})
+            parts = key.split('_')
+            if len(parts) >= 3 and parts[0] == 'novae':
+                # Find coupling method (sinkhorn, softnn, or ot_guided_soft)
+                coupling_methods = ['sinkhorn', 'softnn', 'ot_guided_soft']
+                for method in coupling_methods:
+                    if method in parts:
+                        novae_coupling_method = method
+                        break
+                break
+    
     # Create GIF from comparison frames
-    gif_path = os.path.join(save_dir, f'comparison_{dim}.gif')
+    if novae_coupling_method:
+        gif_path = os.path.join(save_dir, f'comparison_{dim}_{novae_coupling_method}.gif')
+    else:
+        gif_path = os.path.join(save_dir, f'comparison_{dim}.gif')
     create_gif(comparison_dir, gif_path, fps=10)
+
+    # Check if there are auto-encoder based models and create recon_gen GIF
+    ae_models = {'novae'}  # Auto-encoder based methods
+    has_ae_model = any(any(k.startswith(m) or k.split('_')[0] == m for m in ae_models) 
+                       for k in model_dirs.keys())
+    
+    if has_ae_model:
+        print("\nCreating recon+gen comparison for auto-encoder models...")
+        recon_gen_dir = os.path.join(save_dir, 'comparison_frames_recon_gen')
+        os.makedirs(recon_gen_dir, exist_ok=True)
+        
+        for epoch in range(1, epochs + 1):
+            recon_gen_path = os.path.join(recon_gen_dir, f'epoch_{epoch:04d}.png')
+            create_comparison_grid_recon_gen(model_dirs, epoch, recon_gen_path, dim=dim)
+        
+        # Create GIF from recon_gen frames
+        if novae_coupling_method:
+            recon_gen_gif_path = os.path.join(save_dir, f'comparison_{dim}_recon_gen_{novae_coupling_method}.gif')
+        else:
+            recon_gen_gif_path = os.path.join(save_dir, f'comparison_{dim}_recon_gen.gif')
+        create_gif(recon_gen_dir, recon_gen_gif_path, fps=10)
 
     print(f"\n{dim.upper()} experiments complete!")
     print(f"Results saved to: {save_dir}")
@@ -419,23 +602,46 @@ def create_visualizations_only(dim='1d', epochs=100, models=['fm', 'meanflow', '
         if model_key in model_dirs:
             model_key = f'{model_name}_{cfm_type}_{idx}'
         
-        model_dir = os.path.join(save_dir, f'{model_key}_epochs')
-        if os.path.exists(model_dir):
-            model_dirs[model_key] = model_dir
-            print(f"Found {model_name} ({cfm_type}) directory: {model_dir}")
-        else:
-            # Try old format for backward compatibility
-            old_model_dir = os.path.join(save_dir, f'{model_name}_{cfm_type}_epochs')
-            if os.path.exists(old_model_dir):
-                model_dirs[model_key] = old_model_dir
-                print(f"Found {model_name} ({cfm_type}) directory: {old_model_dir}")
-            else:
-                old_format_dir = os.path.join(save_dir, f'{model_name}_epochs')
-                if os.path.exists(old_format_dir):
-                    model_dirs[model_key] = old_format_dir
-                    print(f"Found {model_name} directory (old format): {old_format_dir}")
+        # For novae, try with coupling method first (new format)
+        if model_name == 'novae':
+            # Try different coupling methods
+            coupling_methods = ['sinkhorn', 'softnn', 'ot_guided_soft']
+            found = False
+            for coupling_method in coupling_methods:
+                novae_model_key = f'{model_key}_{coupling_method}'
+                novae_model_dir = os.path.join(save_dir, f'{novae_model_key}_epochs')
+                if os.path.exists(novae_model_dir):
+                    model_dirs[model_key] = novae_model_dir
+                    print(f"Found {model_name} ({cfm_type}, {coupling_method}) directory: {novae_model_dir}")
+                    found = True
+                    break
+            
+            if not found:
+                # Try old format without coupling method (backward compatibility)
+                model_dir = os.path.join(save_dir, f'{model_key}_epochs')
+                if os.path.exists(model_dir):
+                    model_dirs[model_key] = model_dir
+                    print(f"Found {model_name} ({cfm_type}) directory (old format): {model_dir}")
                 else:
                     print(f"Warning: {model_name} ({cfm_type}) directory not found: {model_dir}")
+        else:
+            model_dir = os.path.join(save_dir, f'{model_key}_epochs')
+            if os.path.exists(model_dir):
+                model_dirs[model_key] = model_dir
+                print(f"Found {model_name} ({cfm_type}) directory: {model_dir}")
+            else:
+                # Try old format for backward compatibility
+                old_model_dir = os.path.join(save_dir, f'{model_name}_{cfm_type}_epochs')
+                if os.path.exists(old_model_dir):
+                    model_dirs[model_key] = old_model_dir
+                    print(f"Found {model_name} ({cfm_type}) directory: {old_model_dir}")
+                else:
+                    old_format_dir = os.path.join(save_dir, f'{model_name}_epochs')
+                    if os.path.exists(old_format_dir):
+                        model_dirs[model_key] = old_format_dir
+                        print(f"Found {model_name} directory (old format): {old_format_dir}")
+                    else:
+                        print(f"Warning: {model_name} ({cfm_type}) directory not found: {model_dir}")
     
     if not model_dirs:
         print(f"Error: No model directories found in {save_dir}")
@@ -456,9 +662,49 @@ def create_visualizations_only(dim='1d', epochs=100, models=['fm', 'meanflow', '
         if (epoch % 50 == 0) or epoch == epochs:
             print(f"Created comparison image for epoch {epoch}/{epochs}")
     
-    # Create GIF from comparison frames
-    gif_path = os.path.join(save_dir, f'comparison_{dim}.gif')
+    # Extract NOVAE coupling method from model_dirs for GIF naming
+    novae_coupling_method = None
+    for key in model_dirs.keys():
+        if 'novae' in key:
+            # Extract coupling method from key (format: novae_icfm_{coupling_method})
+            parts = key.split('_')
+            if len(parts) >= 3 and parts[0] == 'novae':
+                # Find coupling method (sinkhorn, softnn, or ot_guided_soft)
+                coupling_methods = ['sinkhorn', 'softnn', 'ot_guided_soft']
+                for method in coupling_methods:
+                    if method in parts:
+                        novae_coupling_method = method
+                        break
+                break
+    
+    if novae_coupling_method:
+        gif_path = os.path.join(save_dir, f'comparison_{dim}_{novae_coupling_method}.gif')
+    else:
+        gif_path = os.path.join(save_dir, f'comparison_{dim}.gif')
     create_gif(comparison_dir, gif_path, fps=10)
+    
+    # Check if there are auto-encoder based models and create recon_gen GIF
+    ae_models = {'novae'}  # Auto-encoder based methods
+    has_ae_model = any(any(k.startswith(m) or k.split('_')[0] == m for m in ae_models) 
+                       for k in model_dirs.keys())
+    
+    if has_ae_model:
+        print("\nCreating recon+gen comparison for auto-encoder models...")
+        recon_gen_dir = os.path.join(save_dir, 'comparison_frames_recon_gen')
+        os.makedirs(recon_gen_dir, exist_ok=True)
+        
+        for epoch in range(1, epochs + 1):
+            recon_gen_path = os.path.join(recon_gen_dir, f'epoch_{epoch:04d}.png')
+            create_comparison_grid_recon_gen(model_dirs, epoch, recon_gen_path, dim=dim)
+            if (epoch % 50 == 0) or epoch == epochs:
+                print(f"Created recon+gen comparison image for epoch {epoch}/{epochs}")
+        
+        # Create GIF from recon_gen frames
+        if novae_coupling_method:
+            recon_gen_gif_path = os.path.join(save_dir, f'comparison_{dim}_recon_gen_{novae_coupling_method}.gif')
+        else:
+            recon_gen_gif_path = os.path.join(save_dir, f'comparison_{dim}_recon_gen.gif')
+        create_gif(recon_gen_dir, recon_gen_gif_path, fps=10)
     
     print(f"\n{dim.upper()} visualizations complete!")
     print(f"Results saved to: {save_dir}")
@@ -480,7 +726,7 @@ def main():
                        help='Random seed')
     parser.add_argument('--models', type=str, nargs='+',
                        default=['fm', 'meanflow', 'imf', 'facm', 'backflow'],
-                       choices=['fm', 'meanflow', 'imf', 'tdmf', 'facm', 'backflow', 'topk_fm'],
+                       choices=['fm', 'meanflow', 'imf', 'tdmf', 'facm', 'backflow', 'topk_fm', 'novae'],
                        help='Models to train')
     parser.add_argument('--cfm', type=str, nargs='+', default=['icfm'],
                        choices=['icfm', 'otcfm', 'uotcfm', 'uotrfm'],
@@ -515,6 +761,14 @@ def main():
     parser.add_argument('--lr_scheduler', type=str, default='cosine',
                        choices=['none', 'cosine', 'step', 'exponential'],
                        help='Learning rate scheduler type (default: cosine)')
+    parser.add_argument('--novae_use_soft_coupling', type=str, default='false',
+                       choices=['true', 'false', 'auto'],
+                       help='NO-VAE coupling mode: true (soft), false (hard, default), auto (based on reg)')
+    parser.add_argument('--novae_z_recon_weight', type=float, default=1.0,
+                       help='NO-VAE z reconstruction loss weight (default: 1.0)')
+    parser.add_argument('--novae_coupling_method', type=str, default='sinkhorn',
+                       choices=['sinkhorn', 'softnn', 'ot_guided_soft'],
+                       help='NO-VAE coupling method: sinkhorn (default), softnn, or ot_guided_soft')
     parser.add_argument('--viz-only', action='store_true',
                        help='Only create visualizations from existing outputs (no training)')
 
@@ -533,6 +787,17 @@ def main():
     else:
         cfm_types = args.cfm
         print(f"CFM Types: {[c.upper() for c in cfm_types]}")
+    
+    # Parse NO-VAE soft coupling option
+    if args.novae_use_soft_coupling == 'true':
+        novae_use_soft_coupling = True
+    elif args.novae_use_soft_coupling == 'false':
+        novae_use_soft_coupling = False
+    else:  # 'auto'
+        novae_use_soft_coupling = None
+    if novae_use_soft_coupling is not None:
+        mode_str = "soft" if novae_use_soft_coupling else "hard"
+        print(f"NO-VAE coupling mode: {mode_str}")
 
     dims_to_run = ['1d', '2d'] if args.dim == 'both' else [args.dim]
     
@@ -573,7 +838,10 @@ def main():
                 ode_tol=args.ode_tol,
                 dataset_2d=args.dataset_2d,
                 lr_scheduler=args.lr_scheduler,
-                lr_scheduler_params=None
+                lr_scheduler_params=None,
+                novae_use_soft_coupling=novae_use_soft_coupling,
+                novae_z_recon_weight=args.novae_z_recon_weight,
+                novae_coupling_method=args.novae_coupling_method
             )
 
     print("\n" + "="*80)
