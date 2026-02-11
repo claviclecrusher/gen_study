@@ -251,6 +251,8 @@ def run_experiments(dim='1d', epochs=100, n_samples=500, lr=1e-3, batch_size=64,
                    lr_scheduler='cosine', lr_scheduler_params=None,
                    modefm_initial_sigma=None, modefm_min_sigma=0.1, modefm_sigma_decay_factor=0.95,
                    modefm_sigma_schedule='cosine', modefm_sigma_schedule_params=None,
+                   modefm_var_head=False, modefm_var_loss_weight=1.0, modefm_sigma_scale=1.0,
+                   sample_adaptive_warmup_epochs=0, sample_adaptive_warmup_sigma=10.0,
                    novae_use_soft_bridging=False, novae_z_recon_weight=1.0,
                    novae_bridging_method='sinkhorn', novae_n_prior_samples=None,
                    novae_n_prior_samples_recon=None, novae_no_sampling_ratio=0.0,
@@ -286,6 +288,8 @@ def run_experiments(dim='1d', epochs=100, n_samples=500, lr=1e-3, batch_size=64,
     print(f"CFM Types: {cfm_types}")
     if 'modefm' in models:
         sigma_info = f"sigma: init={modefm_initial_sigma or 'auto'}, min={modefm_min_sigma}, schedule={modefm_sigma_schedule}"
+        if modefm_var_head:
+            sigma_info += f", var_head=on, var_loss_weight={modefm_var_loss_weight}, sigma_scale={modefm_sigma_scale}"
         print(f"ModeFM: {sigma_info}")
     print("="*80)
 
@@ -364,7 +368,12 @@ def run_experiments(dim='1d', epochs=100, n_samples=500, lr=1e-3, batch_size=64,
                 min_sigma=modefm_min_sigma,
                 sigma_decay_factor=modefm_sigma_decay_factor,
                 sigma_schedule=modefm_sigma_schedule,
-                sigma_schedule_params=modefm_sigma_schedule_params
+                sigma_schedule_params=modefm_sigma_schedule_params,
+                use_var_head=modefm_var_head,
+                var_loss_weight=modefm_var_loss_weight,
+                sigma_scale=modefm_sigma_scale,
+                sample_adaptive_warmup_epochs=sample_adaptive_warmup_epochs,
+                sample_adaptive_warmup_sigma=sample_adaptive_warmup_sigma
             )
 
         elif model_name == 'meanflow':
@@ -794,8 +803,8 @@ def main():
                        help='ModeFM: minimum sigma for annealing (default: 0.1)')
     parser.add_argument('--modefm_sigma_schedule', type=str, default='cosine',
                        choices=['exponential', 'cosine', 'linear', 'step', 'warmup_cosine', 'warmup_linear',
-                                'three_phase_linear', 'sigmoid', 'batch_adaptive'],
-                       help='ModeFM: sigma schedule (batch_adaptive=per-batch from residual quantile)')
+                                'three_phase_linear', 'sigmoid', 'batch_adaptive', 'sample_adaptive'],
+                       help='ModeFM: sigma schedule (sample_adaptive=var_head output, requires --var_head)')
     parser.add_argument('--modefm_sigma_decay_factor', type=float, default=0.95,
                        help='ModeFM: decay factor for exponential schedule (default: 0.95)')
     parser.add_argument('--modefm_sigma_warmup_ratio', type=float, default=0.2,
@@ -812,6 +821,16 @@ def main():
                        help='ModeFM: quantile (0.5=median) for batch_adaptive (default: 0.5)')
     parser.add_argument('--modefm_sigma_eps', type=float, default=1e-6,
                        help='ModeFM: min sigma epsilon for batch_adaptive (default: 1e-6)')
+    parser.add_argument('--var_head', type=str, default='false', choices=['true', 'false'],
+                       help='ModeFM: add variance head for sample-adaptive sigma (default: false)')
+    parser.add_argument('--modefm_var_loss_weight', type=float, default=1.0,
+                       help='ModeFM: weight for variance head loss (default: 1.0)')
+    parser.add_argument('--modefm_sigma_scale', type=float, default=1.0,
+                       help='ModeFM: kernel_width scale for sample_adaptive (default: 1.0)')
+    parser.add_argument('--sample_adaptive_warmup_epochs', type=int, default=0,
+                       help='ModeFM: epochs to use fixed sigma before sample_adaptive (default: 0)')
+    parser.add_argument('--sample_adaptive_warmup_sigma', type=float, default=10.0,
+                       help='ModeFM: fixed sigma during sample_adaptive warmup (default: 10.0)')
     parser.add_argument('--dataset_2d', type=str, default='shifted_2gauss',
                        choices=['2gauss', 'shifted_2gauss', 'two_moon'],
                        help='2D dataset type (default: 2gauss)')
@@ -941,6 +960,11 @@ def main():
                     'q': args.modefm_sigma_q,
                     'eps': args.modefm_sigma_eps,
                 },
+                modefm_var_head=(args.var_head == 'true'),
+                modefm_var_loss_weight=args.modefm_var_loss_weight,
+                modefm_sigma_scale=args.modefm_sigma_scale,
+                sample_adaptive_warmup_epochs=args.sample_adaptive_warmup_epochs,
+                sample_adaptive_warmup_sigma=args.sample_adaptive_warmup_sigma,
                 dataset_2d=args.dataset_2d,
                 lr_scheduler=args.lr_scheduler,
                 lr_scheduler_params=None,

@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 from visualization.config import COLORS, PLOT_PARAMS, setup_plot_style
 
 
-def visualize_modefm_2d(trajectories, x_data, save_path=None, epoch=None, cfm_type=None):
+def visualize_modefm_2d(trajectories, x_data, save_path=None, epoch=None, cfm_type=None, mcc_sigma=None):
     """
     Visualize ModeFlowMatching model in 2D with trajectories
 
@@ -19,6 +19,7 @@ def visualize_modefm_2d(trajectories, x_data, save_path=None, epoch=None, cfm_ty
         save_path: Path to save the figure (optional)
         epoch: Current epoch number (optional, for title)
         cfm_type: CFM coupling type (optional, for title)
+        mcc_sigma: Average MCC sigma value for this epoch (optional, displayed as text)
     """
     setup_plot_style()
 
@@ -29,7 +30,7 @@ def visualize_modefm_2d(trajectories, x_data, save_path=None, epoch=None, cfm_ty
 
     # Plot real data (background reference)
     ax.scatter(x_data[:, 0], x_data[:, 1],
-               color='black', alpha=0.3, s=15, edgecolors='none', marker='x',
+               color='black', alpha=0.3, s=15, marker='x',
                label='Real data', zorder=1)
 
     # Plot trajectories (z -> x)
@@ -52,6 +53,10 @@ def visualize_modefm_2d(trajectories, x_data, save_path=None, epoch=None, cfm_ty
     cfm_str = f' ({cfm_type.upper()})' if cfm_type else ''
     title = f'ModeFM{cfm_str} (Epoch {epoch})' if epoch is not None else f'ModeFM{cfm_str}'
     ax.set_title(title)
+    if mcc_sigma is not None:
+        ax.text(0.02, 0.98, f'σ̄ = {mcc_sigma:.4f}', transform=ax.transAxes,
+                fontsize=10, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
     ax.legend(loc='best', framealpha=0.9)
     ax.grid(True, alpha=0.3)
 

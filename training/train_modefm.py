@@ -31,6 +31,7 @@ def _compute_sigma(epoch, epochs, initial_sigma, min_sigma, schedule, schedule_p
         three_phase_linear: hold init -> linear decay -> hold min (default 1/3 each)
         sigmoid: hold init -> sigmoid decay -> hold min (default ~1/3 each)
         batch_adaptive: sigma from batch residual quantile (no schedule, computed per batch)
+        sample_adaptive: sigma from var_head output (requires use_var_head)
     """
     decay_factor = schedule_params.get('decay_factor', 0.95)
     step_size = schedule_params.get('step_size', max(1, epochs // 4))
@@ -95,8 +96,8 @@ def _compute_sigma(epoch, epochs, initial_sigma, min_sigma, schedule, schedule_p
             sigma = initial_sigma + (min_sigma - initial_sigma) * sigmoid_val
         else:
             sigma = min_sigma
-    elif schedule == 'batch_adaptive':
-        # Not used - sigma computed per batch in loss_function
+    elif schedule in ('batch_adaptive', 'sample_adaptive'):
+        # Not used - sigma computed per batch/sample in loss_function
         sigma = initial_sigma  # Placeholder for logging
     else:
         raise ValueError(f"Unknown sigma_schedule: {schedule}")
@@ -109,7 +110,9 @@ def train_modefm(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, de
                  cfm_type='otcfm', cfm_reg=0.05, cfm_reg_m=(float('inf'), 2.0), cfm_weight_power=10.0,
                  dataset_2d='2gauss', lr_scheduler='cosine', lr_scheduler_params=None,
                  initial_sigma=None, min_sigma=0.1, sigma_decay_factor=0.95,
-                 sigma_schedule='cosine', sigma_schedule_params=None):
+                 sigma_schedule='cosine', sigma_schedule_params=None,
+                 use_var_head=False, var_loss_weight=1.0, sigma_scale=1.0,
+                 sample_adaptive_warmup_epochs=0, sample_adaptive_warmup_sigma=10.0):
     """
     Train ModeFlowMatching model with Gaussian Kernel Loss
 
@@ -133,8 +136,13 @@ def train_modefm(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, de
         initial_sigma: Initial sigma for Gaussian kernel (default: 5.0 for 1D, 10.0 for 2D)
         min_sigma: Minimum sigma for annealing
         sigma_decay_factor: Sigma decay factor for 'exponential' schedule (default: 0.95)
-        sigma_schedule: 'exponential', 'cosine', 'linear', 'step', 'warmup_cosine', 'warmup_linear'
-        sigma_schedule_params: dict with decay_factor, step_size, gamma, warmup_epochs, warmup_ratio
+        sigma_schedule: schedule name including 'batch_adaptive', 'sample_adaptive'
+        sigma_schedule_params: dict with schedule-specific params
+        use_var_head: add variance head for sample-adaptive sigma
+        var_loss_weight: weight for variance head loss
+        sigma_scale: kernel_width = scale * 2 * sigma^2 for sample_adaptive
+        sample_adaptive_warmup_epochs: use fixed sigma for first N epochs (default 0)
+        sample_adaptive_warmup_sigma: fixed sigma during warmup (default 10.0)
 
     Returns:
         model: Trained ModeFlowMatching model
@@ -145,6 +153,14 @@ def train_modefm(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, de
         raise ValueError(
             "ModeFM does not support UOTRFM coupling. "
             "Use icfm, otcfm, or uotcfm. Please set cfm_type to one of these."
+        )
+
+    # sample_adaptive requires use_var_head
+    use_sample_adaptive = (sigma_schedule == 'sample_adaptive')
+    if use_sample_adaptive and not use_var_head:
+        raise ValueError(
+            "sample_adaptive sigma schedule requires use_var_head=True. "
+            "Please set --var_head true."
         )
 
     # Set random seeds
@@ -166,6 +182,10 @@ def train_modefm(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, de
     print("Training ModeFlowMatching (ModeFM) Model")
     print(f"CFM Type: {cfm_type.upper()}")
     print(f"Gaussian Kernel: sigma_schedule={sigma_schedule}, init={initial_sigma}, min={min_sigma}")
+    if use_var_head:
+        print(f"Var head: enabled, var_loss_weight={var_loss_weight}, sigma_scale={sigma_scale}")
+    if use_sample_adaptive and sample_adaptive_warmup_epochs > 0:
+        print(f"Sample_adaptive warmup: {sample_adaptive_warmup_epochs} epochs at sigma={sample_adaptive_warmup_sigma}")
     print("=" * 60)
 
     # Create CFM sampler
@@ -189,7 +209,9 @@ def train_modefm(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, de
         x_data = torch.FloatTensor(x_data).to(device)
 
     # Create model
-    model = ModeFlowMatching(input_dim=input_dim, initial_sigma=initial_sigma).to(device)
+    model = ModeFlowMatching(
+        input_dim=input_dim, initial_sigma=initial_sigma, use_var_head=use_var_head
+    ).to(device)
     print(f"Model created with {sum(p.numel() for p in model.parameters())} parameters")
 
     # Optimizer
@@ -246,10 +268,19 @@ def train_modefm(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, de
             'eps': sigma_schedule_params.get('eps', 1e-6),
         }
 
+    # Build sample_adaptive params (epoch and warmup updated per epoch in loop)
+    if use_sample_adaptive:
+        sample_adaptive_params = {
+            'scale': sigma_scale,
+            'eps': sigma_schedule_params.get('eps', 1e-8),
+            'warmup_epochs': sample_adaptive_warmup_epochs,
+            'warmup_sigma': sample_adaptive_warmup_sigma,
+        }
+
     print(f"\nTraining for {epochs} epochs...")
     for epoch in range(epochs):
-        # Sigma annealing (skip for batch_adaptive - sigma computed per batch)
-        if not use_batch_adaptive:
+        # Sigma annealing (skip for batch_adaptive and sample_adaptive)
+        if not use_batch_adaptive and not use_sample_adaptive:
             current_sigma = _compute_sigma(
                 epoch, epochs, initial_sigma, min_sigma,
                 sigma_schedule, sigma_schedule_params
@@ -278,7 +309,16 @@ def train_modefm(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, de
             z_coupled, x_coupled, weights = cfm_sampler.sample_coupling(z_batch, x_batch)
 
             optimizer.zero_grad()
-            if use_batch_adaptive:
+            if use_sample_adaptive:
+                sample_adaptive_params['epoch'] = epoch
+                loss, sigma_used = model.loss_function(
+                    z_coupled, x_coupled, t_batch, weights=weights,
+                    sample_adaptive_params=sample_adaptive_params,
+                    var_loss_weight=var_loss_weight
+                )
+                epoch_sigma_sum += sigma_used * batch_size_actual
+                epoch_sigma_count += batch_size_actual
+            elif use_batch_adaptive:
                 loss, sigma_used = model.loss_function(
                     z_coupled, x_coupled, t_batch,
                     weights=weights, sigma_adaptive_params=sigma_adaptive_params
@@ -286,7 +326,10 @@ def train_modefm(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, de
                 epoch_sigma_sum += sigma_used * batch_size_actual
                 epoch_sigma_count += batch_size_actual
             else:
-                loss, _ = model.loss_function(z_coupled, x_coupled, t_batch, weights=weights)
+                loss, _ = model.loss_function(
+                    z_coupled, x_coupled, t_batch, weights=weights,
+                    var_loss_weight=var_loss_weight if use_var_head else 0.0
+                )
                 sigma_used = current_sigma
             loss.backward()
             optimizer.step()
@@ -295,7 +338,7 @@ def train_modefm(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, de
 
         epoch_loss /= n_samples
         history['loss'].append(epoch_loss)
-        if use_batch_adaptive and epoch_sigma_count > 0:
+        if (use_batch_adaptive or use_sample_adaptive) and epoch_sigma_count > 0:
             current_sigma = epoch_sigma_sum / epoch_sigma_count
         # For non-adaptive, current_sigma was set at start of epoch
 
@@ -304,7 +347,13 @@ def train_modefm(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, de
 
         if (epoch + 1) % 200 == 0 or epoch == 0:
             current_lr = optimizer.param_groups[0]['lr']
-            sigma_str = f"Sigma: {current_sigma:.4f} (adaptive)" if use_batch_adaptive else f"Sigma: {current_sigma:.4f}"
+            if use_sample_adaptive:
+                warmup = (sample_adaptive_warmup_epochs > 0 and epoch < sample_adaptive_warmup_epochs)
+                sigma_str = f"Sigma: {current_sigma:.4f} (sample_adaptive{' warmup' if warmup else ''})"
+            elif use_batch_adaptive:
+                sigma_str = f"Sigma: {current_sigma:.4f} (batch_adaptive)"
+            else:
+                sigma_str = f"Sigma: {current_sigma:.4f}"
             print(f"Epoch [{epoch+1}/{epochs}], Loss: {epoch_loss:.6f}, {sigma_str}, LR: {current_lr:.6e}")
 
         # Visualization
@@ -323,7 +372,8 @@ def train_modefm(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, de
                         trajectories=trajectories,
                         coupling_indices=coupling_indices_viz,
                         save_path=viz_path,
-                        vector_info=None
+                        vector_info=None,
+                        mcc_sigma=current_sigma
                     )
                 else:
                     z_tensor = torch.FloatTensor(z_infer_viz).to(device)
@@ -336,7 +386,8 @@ def train_modefm(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, de
                         x_data=x_train_viz,
                         save_path=viz_path,
                         epoch=epoch + 1,
-                        cfm_type=cfm_type
+                        cfm_type=cfm_type,
+                        mcc_sigma=current_sigma
                     )
             model.train()
 

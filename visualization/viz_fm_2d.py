@@ -26,7 +26,7 @@ def visualize_fm_2d(trajectories, x_data, save_path=None, epoch=None, cfm_type=N
 
     # Plot real data (background reference)
     ax.scatter(x_data[:, 0], x_data[:, 1],
-              color='black', alpha=0.3, s=15, edgecolors='none', marker='x',
+              color='black', alpha=0.3, s=15, marker='x',
               label='Real data', zorder=1)
 
     # Plot trajectories (z -> x)

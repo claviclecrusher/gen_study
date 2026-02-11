@@ -83,7 +83,7 @@ def visualize_backflow_2d(trajectories, onestep_samples, x_data, save_path=None,
 
     # Plot real data (background reference)
     ax.scatter(x_data[:, 0], x_data[:, 1],
-              color='black', alpha=0.3, s=15, edgecolors='none', marker='x',
+              color='black', alpha=0.3, s=15, marker='x',
               label='Real data', zorder=1)
 
     # Plot Euler ODE trajectories - blue

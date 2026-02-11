@@ -7,11 +7,7 @@ Two separate visualizations:
 """
 import numpy as np
 import matplotlib.pyplot as plt
-import warnings
 from visualization.config import COLORS, PLOT_PARAMS, setup_plot_style
-
-# Filter out matplotlib warnings for unfilled markers with edgecolors
-warnings.filterwarnings('ignore', category=UserWarning, message='.*edgecolor.*unfilled marker.*')
 
 
 def visualize_novae_2d_recon(x_data, z_, z_selected, x_recon, save_path=None, epoch=None):

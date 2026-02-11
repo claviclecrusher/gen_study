@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 from visualization.config import COLORS, LABELS, PLOT_PARAMS, setup_plot_style
 
 
-def visualize_modefm(z_samples, x_data, trajectories, coupling_indices, save_path=None, vector_info=None):
+def visualize_modefm(z_samples, x_data, trajectories, coupling_indices, save_path=None, vector_info=None, mcc_sigma=None):
     """
     Visualize ModeFlowMatching model training and inference
 
@@ -21,6 +21,7 @@ def visualize_modefm(z_samples, x_data, trajectories, coupling_indices, save_pat
         save_path: Path to save the figure (optional)
         vector_info: Dictionary containing velocity and score vectors at specific time points (optional)
                      Keys: 't_points', 'x_t_samples', 'velocities', 'scores'
+        mcc_sigma: Average MCC sigma value for this epoch (optional, displayed as text)
     """
     setup_plot_style()
 
@@ -152,6 +153,10 @@ def visualize_modefm(z_samples, x_data, trajectories, coupling_indices, save_pat
     ax.set_xlabel('Time (t)')
     ax.set_ylabel('Value')
     ax.set_title('ModeFM: x₀ → x₁ Trajectories (Gaussian Kernel Loss)')
+    if mcc_sigma is not None:
+        ax.text(0.02, 0.98, f'σ̄ = {mcc_sigma:.4f}', transform=ax.transAxes,
+                fontsize=10, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
     ax.set_xticks([0, 1])
     ax.set_xticklabels(['t=0 (x₀)', 't=1 (x₁)'])
     ax.legend(loc='best', framealpha=0.9)
