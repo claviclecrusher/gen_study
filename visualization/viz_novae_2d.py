@@ -38,11 +38,14 @@ def visualize_novae_2d_recon(x_data, z_, z_selected, x_recon, save_path=None, ep
     fig, ax = plt.subplots(1, 1, figsize=(6, 5))
     
     n_samples = len(x_data)
+    # Unique count for z_selected (duplicates count as 1)
+    z_selected_unique = np.unique(np.round(z_selected, 8), axis=0)
+    n_z_selected_unique = len(z_selected_unique)
     
     # Plot real data (background reference)
     ax.scatter(x_data[:, 0], x_data[:, 1],
                color='black', alpha=0.3, s=15, marker='x',
-               label='x (data)', zorder=1)
+               label=f'x (data) ({n_samples})', zorder=1)
     
     # Plot lines: x → z' (encoding)
     for i in range(n_samples):
@@ -68,19 +71,22 @@ def visualize_novae_2d_recon(x_data, z_, z_selected, x_recon, save_path=None, ep
     # Plot points
     ax.scatter(x_data[:, 0], x_data[:, 1],
                color=COLORS['data_x'], alpha=0.7, s=30, marker='x',
-               label='x (data)', zorder=3)
-    
-    ax.scatter(z_[:, 0], z_[:, 1],
-               color=COLORS['latent_z_hat'], alpha=0.7, s=25, marker='o',
-               edgecolors='white', linewidths=0.5, label="z' (encoder)", zorder=3)
+               label=f'x (data) ({n_samples})', zorder=3)
     
     ax.scatter(z_selected[:, 0], z_selected[:, 1],
                color='orange', alpha=0.7, s=25, marker='s',
-               edgecolors='white', linewidths=0.5, label='z (selected)', zorder=3)
+               edgecolors='white', linewidths=0.5,
+               label=f'z (selected) ({n_z_selected_unique})', zorder=3)
+    
+    ax.scatter(z_[:, 0], z_[:, 1],
+               color=COLORS['latent_z_hat'], alpha=0.7, s=25, marker='o',
+               edgecolors='white', linewidths=0.5,
+               label=f"z' (encoder) ({n_samples})", zorder=4)
     
     ax.scatter(x_recon[:, 0], x_recon[:, 1],
                color=COLORS['output_x_hat'], alpha=0.7, s=30, marker='o',
-               edgecolors='white', linewidths=0.5, label="x' (recon)", zorder=3)
+               edgecolors='white', linewidths=0.5,
+               label=f"x' (recon) ({n_samples})", zorder=3)
     
     ax.set_xlabel('x\u2081')
     ax.set_ylabel('x\u2082')

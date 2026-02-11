@@ -15,6 +15,7 @@ from models.decoder import Decoder
 from models.autoencoder import Autoencoder
 from models.vae import VAE
 from models.flow_matching import FlowMatching
+from models.modefm import ModeFlowMatching
 from models.mean_flow import MeanFlow
 from models.facm import FACM
 from models.backflow import BackFlow
@@ -26,6 +27,7 @@ from training.train_decoder import train_decoder
 from training.train_ae import train_autoencoder
 from training.train_vae import train_vae
 from training.train_fm import train_fm
+from training.train_modefm import train_modefm
 from training.train_meanflow import train_meanflow
 from training.train_imf import train_imf
 from training.train_tdmf import train_tdmf
@@ -37,6 +39,7 @@ from visualization.viz_decoder import visualize_decoder
 from visualization.viz_ae import visualize_autoencoder
 from visualization.viz_vae import visualize_vae
 from visualization.viz_fm import visualize_fm
+from visualization.viz_modefm import visualize_modefm
 from visualization.viz_meanflow import visualize_meanflow
 from visualization.viz_facm import visualize_facm
 from visualization.viz_imf import visualize_imf
@@ -66,7 +69,7 @@ def run_experiment(model_type, n_samples=500, epochs=2000, lr=1e-3, batch_size=6
     """
     print("\n" + "=" * 80)
     print(f"RUNNING EXPERIMENT: {model_type.upper()}")
-    if model_type in ['fm', 'meanflow', 'imf', 'tdmf', 'facm', 'backflow', 'topk_fm']:
+    if model_type in ['fm', 'modefm', 'meanflow', 'imf', 'tdmf', 'facm', 'backflow', 'topk_fm']:
         print(f"CFM Type: {cfm_type.upper()}")
     if model_type == 'tdmf':
         print(f"Lambda Trans: {lambda_trans}, Schedule: {lambda_schedule}")
@@ -210,6 +213,46 @@ def run_experiment(model_type, n_samples=500, epochs=2000, lr=1e-3, batch_size=6
             trajectories=trajectories,
             coupling_indices=coupling_indices,
             save_path='/home/user/Desktop/Gen_Study/outputs/fm_visualization.png'
+        )
+
+    elif model_type == 'modefm':
+        # ========================================
+        # ModeFlowMatching (Gaussian Kernel Loss, OTCFM default)
+        # ========================================
+        modefm_model_path = '/home/user/Desktop/Gen_Study/outputs/modefm_model.pt'
+        if os.path.exists(modefm_model_path):
+            print(f"Loading existing model from {modefm_model_path}")
+            model = ModeFlowMatching(input_dim=1).to(device)
+            model.load_state_dict(torch.load(modefm_model_path, map_location=device))
+        else:
+            print("Training new model...")
+            model, _ = train_modefm(
+                n_samples=n_samples, epochs=epochs, lr=lr, batch_size=batch_size,
+                seed=seed, device=device, cfm_type=cfm_type,
+                cfm_reg=cfm_reg, cfm_reg_m=cfm_reg_m, cfm_weight_power=cfm_weight_power
+            )
+            torch.save(model.state_dict(), modefm_model_path)
+
+        model.eval()
+        print("\nPreparing ModeFM visualization...")
+
+        z_train = sample_prior(n_samples=n_samples, seed=seed)
+        x_train = generate_data(n_samples=n_samples, seed=seed)
+        coupling_indices = np.random.permutation(n_samples)
+        n_infer = 200
+        z_infer = sample_prior(n_samples=n_infer, seed=seed + 1)
+        with torch.no_grad():
+            trajectories_tensor = model.sample(
+                torch.FloatTensor(z_infer).unsqueeze(1).to(device), n_steps=100, device=device
+            )
+            trajectories = trajectories_tensor.squeeze().cpu().numpy()
+
+        visualize_modefm(
+            z_samples=z_train,
+            x_data=x_train,
+            trajectories=trajectories,
+            coupling_indices=coupling_indices,
+            save_path='/home/user/Desktop/Gen_Study/outputs/modefm_visualization.png'
         )
 
     elif model_type == 'meanflow':
@@ -533,7 +576,7 @@ def run_experiment(model_type, n_samples=500, epochs=2000, lr=1e-3, batch_size=6
             model, _ = train_novae(
                 n_samples=n_samples, epochs=epochs, lr=lr,
                 batch_size=batch_size, seed=seed, device=device,
-                coupling_method='sinkhorn',
+                bridging_method='sinkhorn',
                 sinkhorn_reg=0.05,
                 sinkhorn_reg_schedule='cosine',
                 sinkhorn_reg_init=1.0,
@@ -553,7 +596,7 @@ def run_experiment(model_type, n_samples=500, epochs=2000, lr=1e-3, batch_size=6
 
             # Reconstruct through full pipeline (encode -> soft NN -> decode)
             z_prior_viz = torch.randn(model.n_prior_samples, 1).to(device)
-            x_hat_out, _, z_sel, _ = model(x_tensor, z_prior_viz)
+            x_hat_out, _, z_sel, _, _ = model(x_tensor, z_prior_viz)
             x_hat = x_hat_out.squeeze().cpu().numpy()
 
         # Inference: sample from prior and decode
@@ -585,15 +628,15 @@ if __name__ == "__main__":
         '--model',
         type=str,
         default='all',
-        choices=['all', 'decoder', 'ae', 'vae', 'vae_beta', 'fm', 'meanflow', 'imf', 'tdmf', 'facm', 'backflow', 'topk_fm', 'novae'],
+        choices=['all', 'decoder', 'ae', 'vae', 'vae_beta', 'fm', 'modefm', 'meanflow', 'imf', 'tdmf', 'facm', 'backflow', 'topk_fm', 'novae'],
         help='Specify which model to run.'
     )
     parser.add_argument(
         '--cfm',
         type=str,
-        default='icfm',
+        default=None,
         choices=['icfm', 'otcfm', 'uotcfm', 'uotrfm'],
-        help='CFM coupling type for flow models (default: icfm)'
+        help='CFM coupling type for flow models (default: icfm for most, otcfm for modefm)'
     )
     parser.add_argument(
         '--cfm_weight_power',
@@ -644,6 +687,9 @@ if __name__ == "__main__":
     # Detect device
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+    # CFM type: model-specific default when not specified (modefm -> otcfm, others -> icfm)
+    cfm_models_list = ['fm', 'modefm', 'meanflow', 'imf', 'tdmf', 'facm', 'backflow', 'topk_fm']
+
     # Common parameters
     params = {
         "n_samples": 500,
@@ -652,7 +698,7 @@ if __name__ == "__main__":
         "batch_size": 64,
         "seed": 42,
         "device": device,
-        "cfm_type": args.cfm,
+        "cfm_type": args.cfm or 'icfm',
         "cfm_reg": 0.05,
         "cfm_reg_m": (float('inf'), 2.0),
         "cfm_weight_power": args.cfm_weight_power,
@@ -676,11 +722,21 @@ if __name__ == "__main__":
     print("\n" + "=" * 80)
 
     if args.model == 'all':
-        all_models = ['decoder', 'ae', 'vae', 'vae_beta', 'fm', 'meanflow', 'imf', 'tdmf', 'facm', 'backflow', 'topk_fm', 'novae']
+        all_models = ['decoder', 'ae', 'vae', 'vae_beta', 'fm', 'modefm', 'meanflow', 'imf', 'tdmf', 'facm', 'backflow', 'topk_fm', 'novae']
         for model_type in all_models:
-            run_experiment(model_type, **params)
+            params_copy = params.copy()
+            if model_type in cfm_models_list:
+                params_copy['cfm_type'] = (
+                    'otcfm' if (model_type == 'modefm' and args.cfm is None) else (args.cfm or 'icfm')
+                )
+            run_experiment(model_type, **params_copy)
     else:
-        run_experiment(args.model, **params)
+        params_copy = params.copy()
+        if args.model in cfm_models_list:
+            params_copy['cfm_type'] = (
+                'otcfm' if (args.model == 'modefm' and args.cfm is None) else (args.cfm or 'icfm')
+            )
+        run_experiment(args.model, **params_copy)
 
     print("\n\n" + "=" * 80)
     print("ALL REQUESTED EXPERIMENTS COMPLETE!")

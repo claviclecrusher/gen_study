@@ -19,12 +19,36 @@ from models.novae import NOVAE
 from data.synthetic import generate_data, generate_data_2d, sample_prior
 
 
+def _resolve_n_prior_samples(n_prior_samples, batch_size, n_samples):
+    """
+    Resolve n_prior_samples to int.
+    - int: use as is
+    - None: use batch_size (default)
+    - 'batch_size': use batch_size
+    - 'n_data': use n_samples
+    - other str: use batch_size (fallback)
+    """
+    if n_prior_samples is None:
+        return batch_size
+    if isinstance(n_prior_samples, int):
+        return n_prior_samples
+    if isinstance(n_prior_samples, str):
+        s = n_prior_samples.strip().lower()
+        if s == 'batch_size':
+            return batch_size
+        if s == 'n_data':
+            return n_samples
+        return batch_size  # fallback for other strings
+    return batch_size  # fallback for other types
+
+
 def train_novae(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, device='cpu',
-               n_prior_samples=None, coupling_method='sinkhorn', sinkhorn_reg=0.05,
+               n_prior_samples=None, n_prior_samples_recon=None, bridging_method='sinkhorn', sinkhorn_reg=0.05,
                sinkhorn_reg_schedule='cosine', sinkhorn_reg_init=1.0, sinkhorn_reg_final=0.01,
-               sinkhorn_use_soft_coupling=False, z_recon_weight=1.0,
+               sinkhorn_use_soft_bridging=False, z_recon_weight=1.0,
+               no_sampling_ratio=0.0, beta=0.0, nep_weight=0.0, nep_var_weight=0.0,
                temperature=0.1, temperature_schedule='cosine', temperature_init=0.01, temperature_final=0.0,
-               use_ste=False, alignment_weight=1.0,
+               use_ste=False, alignment_weight=1.0, count_var_weight=0.1,
                viz_freq=200, save_dir='/home/user/Desktop/Gen_Study/outputs',
                dim='1d', dataset_2d='2gauss',
                lr_scheduler='cosine', lr_scheduler_params=None):
@@ -38,15 +62,32 @@ def train_novae(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, dev
         batch_size: Batch size for training
         seed: Random seed
         device: Device to train on
-        n_prior_samples: Number of prior samples N per mini-batch (default: None, uses n_samples)
-        coupling_method: Coupling method ('sinkhorn', default)
+        n_prior_samples: Number of prior samples N per mini-batch. Can be int, str, or None.
+            - int: use that value
+            - 'batch_size': same as batch_size
+            - 'n_data': same as n_samples
+            - other str: treated as batch_size
+            - None: uses batch_size (default)
+        n_prior_samples_recon: Number of prior samples for reconstruction inference. Independent from n_prior_samples.
+            - None: use len(viz_x_data) = n_samples, i.e. input batch size at inference (default)
+            - int: use that value
+        bridging_method: Bridging method ('sinkhorn', default)
         sinkhorn_reg: Entropic regularization for Sinkhorn (if schedule='fixed', default: 0.05)
         sinkhorn_reg_schedule: Epsilon annealing schedule ('fixed', 'linear', 'exponential', 'cosine', default: 'cosine')
         sinkhorn_reg_init: Initial epsilon for annealing (default: 1.0)
         sinkhorn_reg_final: Final epsilon for annealing (default: 0.01)
-        sinkhorn_use_soft_coupling: If True, always use soft coupling. If False, always use hard coupling.
+        sinkhorn_use_soft_bridging: If True, always use soft bridging. If False, always use hard bridging.
                                     If None, auto-select based on sinkhorn_reg (default: None)
         z_recon_weight: Weight for latent reconstruction loss (default: 1.0)
+        no_sampling_ratio: Float in [0, 1]. For this fraction of each batch, use z_enc
+            directly in the decoder (no bridging with noise) for reconstruction.
+            Default: 0.0 (all samples use bridging).
+        beta: Weight for regularization loss (default: 0.0). Sample-based KL(z_enc batch || N(0,I)).
+        nep_weight: Weight for NEP loss (default: 0.0). Only used when bridging_method='nep'.
+        nep_var_weight: Weight for NEP distance variance penalty (default: 0.0).
+            Penalizes std of per-sample squared distances between z_enc and z_selected.
+        count_var_weight: Weight for Inverted SoftNN load balancing loss (default: 0.1).
+            Penalizes std of soft counts per encoder. Only used when bridging_method='inv_softnn'.
         viz_freq: Frequency to save visualizations (every N epochs)
         save_dir: Directory to save visualizations
         dim: Dimension ('1d' or '2d')
@@ -62,23 +103,35 @@ def train_novae(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, dev
     torch.manual_seed(seed)
     np.random.seed(seed)
 
+    # Resolve n_prior_samples (int, 'batch_size', 'n_data', or None -> batch_size)
+    n_prior_resolved = _resolve_n_prior_samples(n_prior_samples, batch_size, n_samples)
+    n_prior_display = f"{n_prior_samples} -> {n_prior_resolved}" if isinstance(n_prior_samples, str) else n_prior_resolved
+
     print("=" * 60)
     print(f"Training Noise Oriented VAE (NO-VAE)")
-    n_prior_display = n_prior_samples if n_prior_samples is not None else f"n_samples ({n_samples})"
+    n_prior_recon_display = n_prior_samples_recon if n_prior_samples_recon is not None else f"n_samples ({n_samples})"
     print(f"N prior samples: {n_prior_display}")
-    print(f"Coupling method: {coupling_method}")
-    if coupling_method == 'sinkhorn':
+    print(f"N prior samples (recon inference): {n_prior_recon_display}")
+    print(f"Bridging method: {bridging_method}")
+    if bridging_method == 'sinkhorn':
         if sinkhorn_reg_schedule == 'fixed':
             print(f"Sinkhorn regularization: {sinkhorn_reg} (fixed)")
         else:
             print(f"Sinkhorn regularization schedule: {sinkhorn_reg_schedule}")
             print(f"  Initial: {sinkhorn_reg_init}, Final: {sinkhorn_reg_final}")
-        if sinkhorn_use_soft_coupling is not None:
-            coupling_mode = "soft" if sinkhorn_use_soft_coupling else "hard"
-            print(f"Sinkhorn coupling mode: {coupling_mode} (explicit)")
+        if sinkhorn_use_soft_bridging is not None:
+            bridging_mode = "soft" if sinkhorn_use_soft_bridging else "hard"
+            print(f"Sinkhorn bridging mode: {bridging_mode} (explicit)")
         else:
             print(f"Coupling mode: auto (soft if reg > 0.01)")
     print(f"Z reconstruction weight: {z_recon_weight}")
+    print(f"No-sampling ratio: {no_sampling_ratio} (fraction using z_enc directly)")
+    print(f"Regularization beta: {beta}")
+    if bridging_method == 'nep':
+        print(f"NEP weight: {nep_weight}")
+        print(f"NEP var weight: {nep_var_weight}")
+    if bridging_method == 'inv_softnn':
+        print(f"Inverted SoftNN count_var_weight: {count_var_weight}")
     print(f"Dimension: {dim}")
     print("=" * 60)
 
@@ -104,12 +157,12 @@ def train_novae(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, dev
     model = NOVAE(
         input_dim=input_dim,
         latent_dim=input_dim,
-        n_prior_samples=n_prior_samples,
-        coupling_method=coupling_method,
+        n_prior_samples=n_prior_resolved,
+        bridging_method=bridging_method,
         sinkhorn_reg=init_reg,
-        sinkhorn_use_soft_coupling=sinkhorn_use_soft_coupling,
-        temperature=temperature_init if coupling_method in ['softnn', 'ot_guided_soft'] else temperature,
-        use_ste=use_ste if coupling_method == 'softnn' else False
+        sinkhorn_use_soft_bridging=sinkhorn_use_soft_bridging,
+        temperature=temperature_init if bridging_method in ['softnn', 'ot_guided_soft', 'inv_softnn'] else temperature,
+        use_ste=use_ste if bridging_method in ['softnn', 'inv_softnn'] else False
     ).to(device)
     print(f"Model created with {sum(p.numel() for p in model.parameters())} parameters")
 
@@ -159,8 +212,8 @@ def train_novae(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, dev
 
     print(f"\nTraining for {epochs} epochs...")
     for epoch in range(epochs):
-        # Update sinkhorn_reg schedule (epsilon annealing) for Sinkhorn coupling
-        if coupling_method == 'sinkhorn':
+        # Update sinkhorn_reg schedule (epsilon annealing) for Sinkhorn/NEP bridging
+        if bridging_method in ['sinkhorn', 'nep']:
             if sinkhorn_reg_schedule == 'linear':
                 # Linear decay: reg = init + (final - init) * (epoch / epochs)
                 current_reg = sinkhorn_reg_init + (sinkhorn_reg_final - sinkhorn_reg_init) * (epoch / epochs)
@@ -177,8 +230,8 @@ def train_novae(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, dev
             
             model.set_sinkhorn_reg(current_reg)
         
-        # Update temperature schedule for Soft NN and OT-Guided Soft coupling
-        if coupling_method in ['softnn', 'ot_guided_soft']:
+        # Update temperature schedule for Soft NN, OT-Guided Soft, and Inverted SoftNN bridging
+        if bridging_method in ['softnn', 'ot_guided_soft', 'inv_softnn']:
             if temperature_schedule == 'linear':
                 current_temp = temperature_init + (temperature_final - temperature_init) * (epoch / epochs)
             elif temperature_schedule == 'exponential':
@@ -206,28 +259,42 @@ def train_novae(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, dev
 
             x_batch = x_shuffled[start_idx:end_idx]
 
-            # Sample N prior samples for this batch
-            # Use n_samples if n_prior_samples is None
-            n_prior = n_prior_samples if n_prior_samples is not None else n_samples
+            # Sample N prior samples for this batch (default: batch_size)
+            n_prior = n_prior_resolved
             z_prior = torch.randn(n_prior, input_dim).to(device)
 
-            # Forward pass: encode -> OT coupling -> decode
-            x_hat, z_, z_selected, weights = model(x_batch, z_prior)
+            # Forward pass: encode -> OT bridging -> decode
+            no_sampling_val = no_sampling_ratio if no_sampling_ratio > 0 else None
+            x_hat, z_, z_selected, weights, no_sampling_mask = model(
+                x_batch, z_prior, no_sampling_ratio=no_sampling_val
+            )
 
-            # Loss: reconstruction + latent reconstruction + alignment (for ot_guided_soft)
-            # For softnn and ot_guided_soft: z_recon_weight should be 0 (only reconstruction loss)
+            # Loss: reconstruction + latent reconstruction + alignment + NEP
             matching_info = None
-            if coupling_method == 'ot_guided_soft' and isinstance(weights, tuple):
+            nep_info = None
+            inv_softnn_info = None
+            if bridging_method == 'ot_guided_soft' and isinstance(weights, tuple):
                 matching_info = weights  # (matching_indices, distances_sq)
-            
-            # Adjust z_recon_weight based on coupling method
-            # softnn and ot_guided_soft don't use z_recon loss (only reconstruction + alignment)
-            effective_z_recon_weight = 0.0 if coupling_method in ['softnn', 'ot_guided_soft'] else z_recon_weight
-            
-            loss = model.loss_function(x_batch, x_hat, z_, z_selected, 
+            elif bridging_method == 'nep' and isinstance(weights, dict):
+                nep_info = weights  # dict with 'assignments' and 'distances_sq'
+            elif bridging_method == 'inv_softnn' and isinstance(weights, dict):
+                inv_softnn_info = weights  # dict with 'counts', 'distances_sq', 'selected_indices'
+
+            # Adjust z_recon_weight based on bridging method
+            # softnn, ot_guided_soft, nep don't use z_recon loss; inv_softnn DOES use it (distance min)
+            effective_z_recon_weight = 0.0 if bridging_method in ['softnn', 'ot_guided_soft', 'nep'] else z_recon_weight
+
+            loss = model.loss_function(x_batch, x_hat, z_, z_selected,
                                      z_recon_weight=effective_z_recon_weight,
                                      alignment_weight=alignment_weight,
-                                     matching_info=matching_info)
+                                     matching_info=matching_info,
+                                     no_sampling_mask=no_sampling_mask,
+                                     beta=beta,
+                                     nep_weight=nep_weight,
+                                     nep_var_weight=nep_var_weight,
+                                     nep_info=nep_info,
+                                     inv_softnn_info=inv_softnn_info,
+                                     count_var_weight=count_var_weight if bridging_method == 'inv_softnn' else 0.0)
 
             # Backward pass
             optimizer.zero_grad()
@@ -247,9 +314,9 @@ def train_novae(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, dev
         # Print progress
         if (epoch + 1) % 200 == 0 or epoch == 0:
             current_lr = optimizer.param_groups[0]['lr']
-            if coupling_method == 'sinkhorn':
+            if bridging_method in ['sinkhorn', 'nep']:
                 reg_str = f", Reg: {current_reg:.4f}" if sinkhorn_reg_schedule != 'fixed' else ""
-            elif coupling_method in ['softnn', 'ot_guided_soft']:
+            elif bridging_method in ['softnn', 'ot_guided_soft', 'inv_softnn']:
                 reg_str = f", Temp: {current_temp:.4f}" if temperature_schedule != 'fixed' else ""
             else:
                 reg_str = ""
@@ -257,8 +324,13 @@ def train_novae(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, dev
                   f"Loss: {epoch_loss:.6f}, "
                   f"LR: {current_lr:.6e}{reg_str}")
 
-        # Generate visualization every viz_freq epochs
-        if (epoch + 1) % viz_freq == 0 or epoch == 0:
+        # Generate visualization: every epoch for first 20 epochs, then every 10 epochs
+        if epoch < 20:
+            should_viz = True  # Every epoch for first 20 epochs
+        else:
+            should_viz = (epoch + 1) % 10 == 0  # Every 10 epochs after epoch 20
+        
+        if should_viz:
             model.eval()
             with torch.no_grad():
                 # Compute reconstruction of training data
@@ -268,10 +340,10 @@ def train_novae(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, dev
                     x_data_tensor = torch.FloatTensor(viz_x_data).to(device)
                 
                 # Forward pass: encode -> soft NN -> decode
-                # Use viz_x_data size if n_prior_samples is None
-                n_prior_viz = n_prior_samples if n_prior_samples is not None else len(viz_x_data)
+                # Reconstruction inference: n_prior_samples_recon defaults to input batch size (len(viz_x_data))
+                n_prior_viz = n_prior_samples_recon if n_prior_samples_recon is not None else len(viz_x_data)
                 z_prior_viz = torch.randn(n_prior_viz, input_dim).to(device)
-                x_recon_tensor, _, _, _ = model(x_data_tensor, z_prior_viz)
+                x_recon_tensor, _, _, _, _ = model(x_data_tensor, z_prior_viz)
                 
                 if dim == '1d':
                     x_recon = x_recon_tensor.squeeze().cpu().numpy()
@@ -289,10 +361,10 @@ def train_novae(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, dev
                     )
                 else:
                     # Get full reconstruction pipeline outputs
-                    # Use viz_x_data size if n_prior_samples is None
-                    n_prior_viz = n_prior_samples if n_prior_samples is not None else len(viz_x_data)
+                    # Reconstruction inference: n_prior_samples_recon defaults to input batch size (len(viz_x_data))
+                    n_prior_viz = n_prior_samples_recon if n_prior_samples_recon is not None else len(viz_x_data)
                     z_prior_viz = torch.randn(n_prior_viz, input_dim).to(device)
-                    x_recon_tensor, z_tensor, z_selected_tensor, _ = model(x_data_tensor, z_prior_viz)
+                    x_recon_tensor, z_tensor, z_selected_tensor, _, _ = model(x_data_tensor, z_prior_viz)
                     
                     x_recon = x_recon_tensor.cpu().numpy()
                     z_ = z_tensor.cpu().numpy()
@@ -330,6 +402,19 @@ def train_novae(n_samples=500, epochs=2000, lr=1e-3, batch_size=64, seed=42, dev
     return model, history
 
 
+def _parse_n_prior_samples(value):
+    """Parse n_prior_samples: int, 'batch_size', 'n_data', or None."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if s.lower() in ('none', ''):
+        return None
+    try:
+        return int(s)
+    except ValueError:
+        return s.lower()
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -339,8 +424,23 @@ if __name__ == "__main__":
     parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
-    parser.add_argument('--n_prior_samples', type=int, default=1024,
-                        help='Number of prior samples per batch')
+    parser.add_argument('--n_prior_samples', type=_parse_n_prior_samples, default=None,
+                        help='Prior samples: int, "batch_size", "n_data" (default: None, uses batch_size)')
+    parser.add_argument('--n_prior_samples_recon', type=int, default=None,
+                        help='Prior samples for recon inference (default: None, uses input batch size = n_samples)')
+    parser.add_argument('--no_sampling_ratio', type=float, default=0.0,
+                        help='Fraction of batch to use z_enc directly (no bridging) for reconstruction (default: 0.0)')
+    parser.add_argument('--beta', type=float, default=0.0,
+                        help='Weight for regularization loss KL(z_enc batch || N(0,I)) (default: 0.0)')
+    parser.add_argument('--nep_weight', type=float, default=0.0,
+                        help='Weight for NEP loss (only when bridging_method=nep, default: 0.0)')
+    parser.add_argument('--nep_var_weight', type=float, default=0.0,
+                        help='Weight for NEP distance variance penalty (default: 0.0)')
+    parser.add_argument('--bridging_method', type=str, default='sinkhorn',
+                        choices=['sinkhorn', 'softnn', 'ot_guided_soft', 'nep', 'inv_softnn'],
+                        help='Bridging method (default: sinkhorn)')
+    parser.add_argument('--count_var_weight', type=float, default=0.1,
+                        help='Inverted SoftNN load balancing weight (default: 0.1)')
     parser.add_argument('--temperature', type=float, default=0.1,
                         help='Temperature for soft nearest neighbor (if schedule=fixed)')
     parser.add_argument('--temperature_schedule', type=str, default='cosine',
@@ -373,8 +473,15 @@ if __name__ == "__main__":
         seed=args.seed,
         device=device,
         n_prior_samples=args.n_prior_samples,
-        coupling_method=args.coupling_method,
-        sinkhorn_reg=args.sinkhorn_reg,
+        n_prior_samples_recon=args.n_prior_samples_recon,
+        bridging_method=getattr(args, 'bridging_method', getattr(args, 'coupling_method', 'sinkhorn')),
+        sinkhorn_reg=getattr(args, 'sinkhorn_reg', 0.05),
+        sinkhorn_use_soft_bridging=getattr(args, 'sinkhorn_use_soft_bridging', getattr(args, 'sinkhorn_use_soft_coupling', False)),
+        no_sampling_ratio=getattr(args, 'no_sampling_ratio', 0.0),
+        beta=getattr(args, 'beta', 0.0),
+        nep_weight=getattr(args, 'nep_weight', 0.0),
+        nep_var_weight=getattr(args, 'nep_var_weight', 0.0),
+        count_var_weight=getattr(args, 'count_var_weight', 0.1),
         viz_freq=args.viz_freq,
         save_dir=args.output_dir,
         dim=args.dim,
